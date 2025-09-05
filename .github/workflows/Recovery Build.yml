@@ -14,7 +14,7 @@ on:
       DEVICE_TREE_URL:
         description: 'DEVICE_TREE_URL'
         required: true
-        default: 'https://github.com/LinuxGuy312/ofrp_device_realme_RMX1805'
+        default: 'https://github.com/try-01/ofrp_device_realme_RMX1805'
       DEVICE_TREE_BRANCH:
         description: 'DEVICE_TREE_BRANCH'
         required: true
