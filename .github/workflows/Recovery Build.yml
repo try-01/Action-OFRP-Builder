@@ -103,6 +103,12 @@ jobs:
         git clone ${{ github.event.inputs.COMMON_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.COMMON_PATH }}
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
+    - name: Disable Hardware Encryption
+      run: |
+        cd ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
+        sed -i 's/TARGET_HW_DISK_ENCRYPTION := true/TARGET_HW_DISK_ENCRYPTION := false/g' ${{ github.event.inputs.DEVICE_PATH }}/BoardConfig.mk
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
     - name: Sync Device Dependencies
       run: |
         cd ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
