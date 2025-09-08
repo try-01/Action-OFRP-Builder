@@ -40,8 +40,6 @@ jobs:
   build:
     if: github.event.repository.owner.id == github.event.sender.id
     runs-on: ubuntu-22.04
-    env:
-      GIT_TERMINAL_PROMPT: 0
     permissions:
       contents: write
     steps:
@@ -116,7 +114,6 @@ jobs:
         cd ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
         # 5. PERBAIKAN: Hapus direktori yang berkonflik SEBELUM sinkronisasi
         rm -rf bootable/recovery device/qcom/common
-        git clone https://gitlab.com/OrangeFox/vendor/orangefox.git -b fox_9.0 ./vendor/orangefox
         repo sync -j2
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
