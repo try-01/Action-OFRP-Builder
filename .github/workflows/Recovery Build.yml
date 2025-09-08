@@ -40,6 +40,8 @@ jobs:
   build:
     if: github.event.repository.owner.id == github.event.sender.id
     runs-on: ubuntu-22.04
+    env:
+      GIT_TERMINAL_PROMPT: 0
     permissions:
       contents: write
     steps:
