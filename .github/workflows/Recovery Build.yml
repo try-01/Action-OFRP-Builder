@@ -75,7 +75,6 @@ jobs:
         sudo apt install git aria2 -y
         git clone https://gitlab.com/OrangeFox/misc/scripts
         cd scripts
-        sudo bash setup/android_build_env.sh
         sed -i 's/cd -/cd ../g' setup/install_android_sdk.sh
         sudo bash setup/install_android_sdk.sh
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
@@ -86,6 +85,7 @@ jobs:
         git clone ${{ github.event.inputs.SYNC_URL }}
         cd sync/legacy
         ./orangefox_sync_legacy.sh --branch ${{ github.event.inputs.MANIFEST_BRANCH }} --path ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
+        sed -i "s/TeamWin/OrangeFox/g" ${{ github.workspace }}/fox_${{ inputs.MANIFEST_BRANCH }}/vendor/twrp/build/tools/roomservice.py
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
     - name: Clone device tree
