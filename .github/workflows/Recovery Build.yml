@@ -113,7 +113,7 @@ jobs:
       run: |
         cd ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
         # 5. PERBAIKAN: Hapus direktori yang berkonflik SEBELUM sinkronisasi
-        # rm -rf bootable/recovery device/qcom/common
+        rm -rf bootable/recovery device/qcom/common
         repo sync -j2
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
