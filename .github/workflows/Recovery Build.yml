@@ -109,13 +109,13 @@ jobs:
 #        sed -i 's/TARGET_HW_DISK_ENCRYPTION := true/TARGET_HW_DISK_ENCRYPTION := false/g' ${{ github.event.inputs.DEVICE_PATH }}/BoardConfig.mk
 #      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
-    - name: Sync Device Dependencies
-      run: |
-        cd ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
+#    - name: Sync Device Dependencies
+#      run: |
+#        cd ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
         # 5. PERBAIKAN: Hapus direktori yang berkonflik SEBELUM sinkronisasi
-        rm -rf bootable/recovery device/qcom/common
-        repo sync -j2
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+ #       rm -rf bootable/recovery device/qcom/common
+#        repo sync -j2
+#      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
     - name: Set Swap Space
       uses: pierotofy/set-swap-space@master
