@@ -133,7 +133,8 @@ jobs:
       run: |
         cd ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
         echo "Applying source code modifications..."
-        sed -i '/bool verify_package_compatibility(ZipWrap \*zw) {/,/printf("Verifying package compatibility...\\n");/c bool verify_package_compatibility(ZipWrap *zw) { // NOLINT\n   printf("OrangeFox: Forcefully bypassing Treble compatibility check via patch.\\n");\n   return true;' "./bootable/recovery/installcommand.cpp"
+        sed -i '/^bool verify_package_compatibility(ZipWrap \*zw) {/,/^}/c bool verify_package_compatibility(ZipWrap *zw) { // NOLINT\n   printf("OrangeFox: Forcefully bypassing Treble compatibility check via patch.\\n");\n   return true;\n}' "./
+        bootable/recovery/installcommand.cpp"
         echo "Done applying modifications."
         set +e
         source build/envsetup.sh
