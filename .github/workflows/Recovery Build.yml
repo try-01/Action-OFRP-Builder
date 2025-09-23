@@ -132,9 +132,9 @@ jobs:
     - name: Building recovery
       run: |
         cd ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
-        echo "Applying device patches..."
-        (cd bootable/recovery && git apply --reject --whitespace=fix ../../${{ github.event.inputs.DEVICE_PATH }}/patches/*.patch)
-        echo "Done applying patches."
+        echo "Applying source code modifications..."
+        sed -i -e '/bool verify_package_compatibility(ZipWrap \*zw) {/,/}/c\bool verify_package_compatibility(ZipWrap *zw) {\n   printf("OrangeFox: Forcefully bypassing Treble compatibility check via sed.\\n");\n   return true;\n}' ./bootable/recovery/installcommand.cpp
+        echo "Done applying modifications."
         set +e
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
