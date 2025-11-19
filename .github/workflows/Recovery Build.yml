@@ -134,7 +134,6 @@ jobs:
         cd ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
         echo "Applying source code modifications..."
         sed -i '/^bool verify_package_compatibility(ZipWrap \*zw) {/,/^}/c bool verify_package_compatibility(ZipWrap *zw) { // NOLINT\n   (void)zw; // Mark parameter as intentionally unused\n   printf("OrangeFox: Forcefully bypassing Treble compatibility check via patch.\\n");\n   return true;\n}' "./bootable/recovery/installcommand.cpp"
-#        sed -i '1253c\// --------------------------------------------------------------------------------------\n// MODIFICATION START: Forcibly set SDK version for Android 9 Pie\n// The original auto-detection failed, resulting in sdkver=20.\n// We are forcing it to 28 to ensure correct decryption logic is used.\n/*\nstring sdkverstr = TWFunc::System_Property_Get("ro.build.version.sdk");\nif (!sdkverstr.empty()) {\n    sdkver = atoi(sdkverstr.c_str());\n}\n*/\nsdkver = 28;\nLOGINFO("!!! SDK version has been MANUALLY FORCED to %d !!!\\n", sdkver);\n// MODIFICATION END\n// --------------------------------------------------------------------------------------\n#ifdef TW_CRYPTO_SYSTEM_VOLD_MOUNT' "./bootable/recovery/crypto/vold_decrypt/vold_decrypt.cpp"
         echo "Done applying modifications."
         set +e
         source build/envsetup.sh
