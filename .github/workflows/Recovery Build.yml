@@ -129,6 +129,17 @@ jobs:
         sudo ln -sf /usr/bin/python2 /usr/bin/python
       continue-on-error: true
 
+    - name: DEBUG - Locate authorization_set.h
+      run: |
+        cd ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
+        echo "============================================="
+        echo "Mencari file authorization_set.h di seluruh source..."
+        find system -name "authorization_set.h"
+        echo "============================================="
+        echo "Cek isi folder system/security/keystore:"
+        ls -R system/security/keystore || echo "Folder keystore tidak ditemukan"
+        echo "============================================="
+
     - name: Building recovery
       run: |
         cd ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
