@@ -135,9 +135,13 @@ jobs:
         echo "============================================="
         echo "Mencari file authorization_set.h di seluruh source..."
         find system -name "authorization_set.h"
+        find system -name "keymaster_tags.h"
+        find system -name "IKeystoreService.h"
         echo "============================================="
         echo "Cek isi folder system/security/keystore:"
         ls -R system/security/keystore || echo "Folder keystore tidak ditemukan"
+        ls -R system/security/keymaster || echo "Folder keymaster tidak ditemukan"
+        ls -R system/keymaster || echo "Folder keymaster tidak ditemukan"
         echo "============================================="
 
     - name: Building recovery
@@ -158,6 +162,11 @@ jobs:
         sed -i '90s|$| -Wno-unused-variable -Wno-sign-compare -Wno-unused-parameter -Wno-comment|' "./bootable/recovery/crypto/fde/Android.mk"
         sed -i '11s|system/security/keystore|system/security system/security/keystore system/security/keystore/include|' "./bootable/recovery/crypto/ext4crypt/Android.mk"
         sed -i '34s|$| -Wno-unused-function|' "./bootable/recovery/crypto/ext4crypt/Android.mk"
+        sed -i 's|keystore/authorization_set.h|keymaster/authorization_set.h|g' "./bootable/recovery/crypto/ext4crypt/Keymaster3.cpp"
+        sed -i 's|keystore/authorization_set.h|keymaster/authorization_set.h|g' "./bootable/recovery/crypto/ext4crypt/Decrypt.cpp"
+        sed -i 's|keystore/authorization_set.h|keymaster/authorization_set.h|g' "./bootable/recovery/crypto/ext4crypt/Keymaster3.h"
+        sed -i 's|keystore/authorization_set.h|keymaster/authorization_set.h|g' "./bootable/recovery/crypto/ext4crypt/keystore_auth.cpp"
+        sed -i 's|keystore/authorization_set.h|keymaster/authorization_set.h|g' "./bootable/recovery/crypto/ext4crypt/KeyStorage3.cpp"
         echo "Done applying modifications."
         set +e
         source build/envsetup.sh
