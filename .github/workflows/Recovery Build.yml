@@ -145,6 +145,8 @@ jobs:
         sed -i '68s|$| system/security/keystore/include system/security/keystore system/keymaster/include hardware/libhardware/include/hardware|' "./bootable/recovery/crypto/fde/Android.mk"
         sed -i '36s|$| -Wno-unused-variable -Wno-sign-compare -Wno-unused-parameter -Wno-comment|' "./bootable/recovery/crypto/fde/Android.mk"
         sed -i '90s|$| -Wno-unused-variable -Wno-sign-compare -Wno-unused-parameter -Wno-comment|' "./bootable/recovery/crypto/fde/Android.mk"
+        sed -i '11s|system/security/keystore|system/security/keystore system/security/keystore/include|' "./bootable/recovery/crypto/ext4crypt/Android.mk"
+        sed -i '34s|$| -Wno-unused-function|' "./bootable/recovery/crypto/ext4crypt/Android.mk"
         echo "Done applying modifications."
         set +e
         source build/envsetup.sh
