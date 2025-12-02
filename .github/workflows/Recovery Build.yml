@@ -137,6 +137,7 @@ jobs:
         find system -name "authorization_set.h"
         find system -name "keymaster_tags.h"
         find system -name "IKeystoreService.h"
+        find system -name "keymaster"
         echo "============================================="
         echo "Cek isi folder system/security/keystore:"
         ls -R system/security/keystore || echo "Folder keystore tidak ditemukan"
