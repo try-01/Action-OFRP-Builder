@@ -137,6 +137,9 @@ jobs:
         sed -i '21s/-ge 28/-ge 99/g' "./bootable/recovery/crypto/ext4crypt/Android.mk"
         sed -i '25s/-ge 28/-ge 99/g' "./bootable/recovery/crypto/fde/Android.mk"
         sed -i '80s/-ge 28/-ge 99/g' "./bootable/recovery/crypto/fde/Android.mk"
+        sed -i '91d' "./bootable/recovery/crypto/fde/Android.mk"
+        sed -i '36d' "./bootable/recovery/crypto/fde/Android.mk"
+        sed -i '57,59d' "./bootable/recovery/crypto/ext4crypt/Android.mk"
         echo "Done applying modifications."
         set +e
         source build/envsetup.sh
