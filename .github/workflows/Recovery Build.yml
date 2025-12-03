@@ -35,7 +35,7 @@ on:
         description: 'BUILD_TARGET'
         required: true
         default: 'recovery'
-      
+
 jobs:
   build:
     if: github.event.repository.owner.id == github.event.sender.id
@@ -43,12 +43,9 @@ jobs:
     permissions:
       contents: write
     steps:
- 
-    # You might want to Checkout your repo first, but not mandatory
     - name: Check Out
       uses: actions/checkout@v4
 
-    # Cleanup The Actions Workspace Using Custom Composite Run Actions
     - name: Cleanup
       uses: rokibhasansagar/slimhub_actions@main
 
@@ -71,7 +68,6 @@ jobs:
     - name: Prepare the build environment
       run: |
         export JAVA_HOME=/usr/lib/jvm/temurin-8-jdk-amd64
-   
         sudo apt install git aria2 -y
         git clone https://gitlab.com/OrangeFox/misc/scripts
         cd scripts
@@ -94,29 +90,6 @@ jobs:
         git clone ${{ github.event.inputs.DEVICE_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.DEVICE_PATH }}
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
-    - name: Clone common tree
-      if: |
-        github.event.inputs.COMMON_TREE_URL != null
-        && github.event.inputs.COMMON_PATH != null
-      run: |
-        cd ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
-        git clone ${{ github.event.inputs.COMMON_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.COMMON_PATH }}
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
-
-#    - name: Disable Hardware Encryption
-#      run: |
-#        cd ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
-#        sed -i 's/TARGET_HW_DISK_ENCRYPTION := true/TARGET_HW_DISK_ENCRYPTION := false/g' ${{ github.event.inputs.DEVICE_PATH }}/BoardConfig.mk
-#      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
-
-#    - name: Sync Device Dependencies
-#      run: |
-#        cd ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
-        # 5. PERBAIKAN: Hapus direktori yang berkonflik SEBELUM sinkronisasi
- #       rm -rf bootable/recovery device/qcom/common
-#        repo sync -j2
-#      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
-
     - name: Set Swap Space
       uses: pierotofy/set-swap-space@master
       with:
@@ -129,29 +102,17 @@ jobs:
         sudo ln -sf /usr/bin/python2 /usr/bin/python
       continue-on-error: true
 
-    - name: DEBUG - Locate authorization_set.h
+    - name: Apply Crypto Fixes (Manual Patching)
       run: |
         cd ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
-        echo "============================================="
-        echo "Mencari file authorization_set.h di seluruh source..."
-        find system -name "authorization_set.h"
-        find system -name "keymaster_tags.h"
-        find system -name "IKeystoreService.h"
-        find system -name "keymaster"
-        echo "============================================="
-        echo "Cek isi folder system/security/keystore:"
-        ls -R system/security/keystore || echo "Folder keystore tidak ditemukan"
-        ls -R system/security/keymaster || echo "Folder keymaster tidak ditemukan"
-        ls -R system/keymaster || echo "Folder keymaster tidak ditemukan"
-        echo "============================================="
-
-    - name: Building recovery
-      run: |
-        cd ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
-        echo "Applying source code modifications..."
+        
+        echo "=== 1. Fixing Header Locations ==="
+        mkdir -p system/security/keystore/include/keystore
         cp system/keymaster/include/keymaster/authorization_set.h system/security/keystore/include/keystore/
         cp system/keymaster/include/keymaster/keymaster_tags.h system/security/keystore/include/keystore/
-        ls -l system/security/keystore/include/keystore/
+        
+        echo "=== 2. Patching Android.mk Files (Force KM 3.0) ==="
+        # Patch fde/Android.mk
         sed -i '/^bool verify_package_compatibility(ZipWrap \*zw) {/,/^}/c bool verify_package_compatibility(ZipWrap *zw) { // NOLINT\n   (void)zw; // Mark parameter as intentionally unused\n   printf("OrangeFox: Forcefully bypassing Treble compatibility check via patch.\\n");\n   return true;\n}' "./bootable/recovery/installcommand.cpp"
         sed -i '21s/-ge 28/-ge 99/g' "./bootable/recovery/crypto/ext4crypt/Android.mk"
         sed -i '25s/-ge 28/-ge 99/g' "./bootable/recovery/crypto/fde/Android.mk"
@@ -166,29 +127,26 @@ jobs:
         sed -i '90s|$| -Wno-unused-variable -Wno-sign-compare -Wno-unused-parameter -Wno-comment|' "./bootable/recovery/crypto/fde/Android.mk"
         sed -i '11s|system/security/keystore|system/security system/security/keystore system/security/keystore/include|' "./bootable/recovery/crypto/ext4crypt/Android.mk"
         sed -i '34s|$| -Wno-unused-function|' "./bootable/recovery/crypto/ext4crypt/Android.mk"
+
+        echo "=== 3. Overwriting C++ Source Files ==="
+        
+        # FIX Keymaster3.h (Namespace Fix)
         cat > bootable/recovery/crypto/ext4crypt/Keymaster3.h << 'EOF'
         #ifndef ANDROID_VOLD_KEYMASTER_H
         #define ANDROID_VOLD_KEYMASTER_H
-        
         #ifdef __cplusplus
-        
         #include <memory>
         #include <string>
         #include <utility>
-        
         #include <android/hardware/keymaster/3.0/IKeymasterDevice.h>
         #include <keystore/authorization_set.h>
         #include "Utils.h"
-        
         namespace android {
         namespace vold {
         using ::android::hardware::keymaster::V3_0::IKeymasterDevice;
-        
-        // [FIX] Namespace diubah ke keymaster (sesuai header Android 9)
         using ::keymaster::ErrorCode;
         using ::keymaster::KeyPurpose;
         using ::keymaster::AuthorizationSet;
-        
         class KeymasterOperation {
           public:
             ~KeymasterOperation();
@@ -202,8 +160,7 @@ jobs:
                 mError = std::move(rhs.mError);
             }
             KeymasterOperation()
-                : mDevice{nullptr}, mOpHandle{0},
-                  mError {ErrorCode::UNKNOWN_ERROR} {}
+                : mDevice{nullptr}, mOpHandle{0}, mError {ErrorCode::UNKNOWN_ERROR} {}
             KeymasterOperation& operator= (KeymasterOperation&& rhs) {
                 mDevice = std::move(rhs.mDevice);
                 mOpHandle = std::move(rhs.mOpHandle);
@@ -212,81 +169,58 @@ jobs:
                 rhs.mOpHandle = 0;
                 return *this;
             }
-        
           private:
             KeymasterOperation(const sp<IKeymasterDevice>& d, uint64_t h)
                 : mDevice{d}, mOpHandle{h}, mError {ErrorCode::OK} {}
             KeymasterOperation(ErrorCode error)
-                : mDevice{nullptr}, mOpHandle{0},
-                  mError {error} {}
+                : mDevice{nullptr}, mOpHandle{0}, mError {error} {}
             sp<IKeymasterDevice> mDevice;
             uint64_t mOpHandle;
             ErrorCode mError;
             DISALLOW_COPY_AND_ASSIGN(KeymasterOperation);
             friend class Keymaster;
         };
-        
         class Keymaster {
           public:
             Keymaster();
             explicit operator bool() { return mDevice.get() != nullptr; }
             bool deleteKey(const std::string& key);
-            bool upgradeKey(const std::string& oldKey, const AuthorizationSet& inParams,
-                            std::string* newKey);
-            KeymasterOperation begin(KeyPurpose purpose, const std::string& key,
-                                     const AuthorizationSet& inParams, AuthorizationSet* outParams);
+            bool upgradeKey(const std::string& oldKey, const AuthorizationSet& inParams, std::string* newKey);
+            KeymasterOperation begin(KeyPurpose purpose, const std::string& key, const AuthorizationSet& inParams, AuthorizationSet* outParams);
             bool isSecure();
-        
           private:
             sp<hardware::keymaster::V3_0::IKeymasterDevice> mDevice;
             DISALLOW_COPY_AND_ASSIGN(Keymaster);
         };
-        
         namespace dump {
-        template<typename T>
-        std::string toHexString(T t, bool prefix = true) {
+        template<typename T> std::string toHexString(T t, bool prefix = true) {
             std::ostringstream os;
             if (prefix) { os << std::showbase; }
             os << std::hex << t;
             return os.str();
         }
-        template<typename Array>
-        std::string arrayToHexString(const Array &a, size_t size) {
+        template<typename Array> std::string arrayToHexString(const Array &a, size_t size) {
             using android::hardware::toString;
             std::string os;
-            for (size_t i = 0; i < size; ++i) {
-                os += toHexString(a[i]);
-            }
+            for (size_t i = 0; i < size; ++i) os += toHexString(a[i]);
             return os;
         }
-        template<typename T>
-        std::string toString(const hardware::hidl_vec<T> &a) {
+        template<typename T> std::string toString(const hardware::hidl_vec<T> &a) {
             std::string os;
             os += arrayToHexString(a, a.size());
             return os;
         }
-        }  // namespace dump
-        }  // namespace vold
-        }  // namespace android
-        #endif // __cplusplus
-        
+        }
+        }
+        }
+        #endif
         __BEGIN_DECLS
-        int keymaster_sign_object_for_cryptfs_scrypt(const uint8_t* key_blob,
-                                                     size_t key_blob_size,
-                                                     uint32_t ratelimit,
-                                                     const uint8_t* object,
-                                                     const size_t object_size,
-                                                     uint8_t** signature_buffer,
-                                                     size_t* signature_buffer_size,
-                                                     uint8_t* key_buffer,
-                                                     uint32_t key_buffer_size,
-                                                     uint32_t* key_out_size);
+        int keymaster_sign_object_for_cryptfs_scrypt(const uint8_t* key_blob, size_t key_blob_size, uint32_t ratelimit, const uint8_t* object, const size_t object_size, uint8_t** signature_buffer, size_t* signature_buffer_size, uint8_t* key_buffer, uint32_t key_buffer_size, uint32_t* key_out_size);
         __END_DECLS
         #endif
         EOF
-        
-        # 2. FIX Keymaster3.cpp (Method mismatch & includes)
-        # Menambahkan include keymaster_tags.h dan mengganti .hidl_data() dengan authorizationSetToHidl()
+
+        # FIX Keymaster3.cpp
         cat > bootable/recovery/crypto/ext4crypt/Keymaster3.cpp << 'EOF'
         #include "Keymaster3.h"
         #include <keystore/keymaster_tags.h>
@@ -295,26 +229,19 @@ jobs:
         #include <iostream>
         #define ERROR 1
         #define LOG(x) std::cout
-        
         static const std::string kPkmBlob("pKMblob\x00", 8);
         using namespace ::keystore;
         using android::hardware::hidl_string;
         using android::hardware::hidl_vec;
-        
         namespace android {
         namespace vold {
-        
-        KeymasterOperation::~KeymasterOperation() {
-            if (mDevice.get()) mDevice->abort(mOpHandle);
-        }
-        
+        KeymasterOperation::~KeymasterOperation() { if (mDevice.get()) mDevice->abort(mOpHandle); }
         bool KeymasterOperation::updateCompletely(const std::string& input, std::string* output) {
             if (output) output->clear();
             auto it = input.begin();
             uint32_t inputConsumed;
             ErrorCode km_error;
-            auto hidlCB = [&] (ErrorCode ret, uint32_t _inputConsumed,
-                    const hidl_vec<KeyParameter>&, const hidl_vec<uint8_t>& _output) {
+            auto hidlCB = [&] (ErrorCode ret, uint32_t _inputConsumed, const hidl_vec<KeyParameter>&, const hidl_vec<uint8_t>& _output) {
                 km_error = ret;
                 if (km_error != ErrorCode::OK) return;
                 inputConsumed = _inputConsumed;
@@ -324,21 +251,12 @@ jobs:
                 size_t toRead = static_cast<size_t>(input.end() - it);
                 auto inputBlob = blob2hidlVec(reinterpret_cast<const uint8_t*>(&*it), toRead);
                 auto error = mDevice->update(mOpHandle, hidl_vec<KeyParameter>(), inputBlob, hidlCB);
-                if (!error.isOk() || km_error != ErrorCode::OK) {
-                    LOG(ERROR) << "update failed\n";
-                    mDevice = nullptr;
-                    return false;
-                }
-                if (inputConsumed > toRead) {
-                    LOG(ERROR) << "update reported too much input consumed\n";
-                    mDevice = nullptr;
-                    return false;
-                }
+                if (!error.isOk() || km_error != ErrorCode::OK) { mDevice = nullptr; return false; }
+                if (inputConsumed > toRead) { mDevice = nullptr; return false; }
                 it += inputConsumed;
             }
             return true;
         }
-        
         bool KeymasterOperation::finish(std::string* output) {
             ErrorCode km_error;
             auto hidlCb = [&] (ErrorCode ret, const hidl_vec<KeyParameter>&, const hidl_vec<uint8_t>& _output) {
@@ -348,22 +266,10 @@ jobs:
             };
             auto error = mDevice->finish(mOpHandle, hidl_vec<KeyParameter>(), hidl_vec<uint8_t>(), hidl_vec<uint8_t>(), hidlCb);
             mDevice = nullptr;
-            if (!error.isOk() || km_error != ErrorCode::OK) {
-                LOG(ERROR) << "finish failed\n";
-                return false;
-            }
-            return true;
+            return (error.isOk() && km_error == ErrorCode::OK);
         }
-        
-        Keymaster::Keymaster() {
-            mDevice = ::android::hardware::keymaster::V3_0::IKeymasterDevice::getService();
-        }
-        
-        bool Keymaster::deleteKey(const std::string&) {
-            LOG(ERROR) << "NOT deleting key in TWRP\n";
-            return false;
-        }
-        
+        Keymaster::Keymaster() { mDevice = ::android::hardware::keymaster::V3_0::IKeymasterDevice::getService(); }
+        bool Keymaster::deleteKey(const std::string&) { return false; }
         bool Keymaster::upgradeKey(const std::string& oldKey, const AuthorizationSet& inParams, std::string* newKey) {
             auto oldKeyBlob = blob2hidlVec(oldKey);
             ErrorCode km_error;
@@ -372,17 +278,10 @@ jobs:
                 if (km_error != ErrorCode::OK) return;
                 if (newKey) newKey->assign(reinterpret_cast<const char*>(&upgradedKeyBlob[0]), upgradedKeyBlob.size());
             };
-            // [FIX] Use authorizationSetToHidl instead of hidl_data()
             auto error = mDevice->upgradeKey(oldKeyBlob, keystore::authorizationSetToHidl(inParams), hidlCb);
-            if (!error.isOk() || km_error != ErrorCode::OK) {
-                LOG(ERROR) << "upgrade_key failed\n";
-                return false;
-            }
-            return true;
+            return (error.isOk() && km_error == ErrorCode::OK);
         }
-        
-        KeymasterOperation Keymaster::begin(KeyPurpose purpose, const std::string& key,
-                                            const AuthorizationSet& inParams, AuthorizationSet* outParams) {
+        KeymasterOperation Keymaster::begin(KeyPurpose purpose, const std::string& key, const AuthorizationSet& inParams, AuthorizationSet* outParams) {
             auto keyBlob = blob2hidlVec(key);
             uint64_t mOpHandle;
             ErrorCode km_error;
@@ -393,55 +292,34 @@ jobs:
                 mOpHandle = operationHandle;
             };
             std::string kmKey = dump::toString(keyBlob);
-            if (!kmKey.compare(0, kPkmBlob.size(), kPkmBlob)) {
-                kmKey.erase(0, kPkmBlob.size());
-                keyBlob = blob2hidlVec(kmKey);
-            }
-            // [FIX] Use authorizationSetToHidl instead of hidl_data()
+            if (!kmKey.compare(0, kPkmBlob.size(), kPkmBlob)) { kmKey.erase(0, kPkmBlob.size()); keyBlob = blob2hidlVec(kmKey); }
             auto error = mDevice->begin(purpose, keyBlob, keystore::authorizationSetToHidl(inParams), hidlCb);
-            if (!error.isOk() || km_error != ErrorCode::OK) {
-                LOG(ERROR) << "begin failed\n";
-                return KeymasterOperation(km_error);
-            }
+            if (!error.isOk() || km_error != ErrorCode::OK) return KeymasterOperation(km_error);
             return KeymasterOperation(mDevice, mOpHandle);
         }
-        
         bool Keymaster::isSecure() {
             bool _isSecure = false;
-            auto rc = mDevice->getHardwareFeatures(
-                    [&] (bool isSecure, bool, bool, bool, bool, const hidl_string&, const hidl_string&) {
-                        _isSecure = isSecure; });
+            auto rc = mDevice->getHardwareFeatures([&] (bool isSecure, bool, bool, bool, bool, const hidl_string&, const hidl_string&) { _isSecure = isSecure; });
             return rc.isOk() && _isSecure;
         }
-        } // vold
-        } // android
-        
+        }
+        }
         using namespace ::android::vold;
-        
-        int keymaster_sign_object_for_cryptfs_scrypt(const uint8_t* key_blob, size_t key_blob_size,
-                                                     uint32_t ratelimit, const uint8_t* object, const size_t object_size,
-                                                     uint8_t** signature_buffer, size_t* signature_buffer_size,
-                                                     uint8_t* key_buffer, uint32_t key_buffer_size, uint32_t* key_out_size) {
+        int keymaster_sign_object_for_cryptfs_scrypt(const uint8_t* key_blob, size_t key_blob_size, uint32_t ratelimit, const uint8_t* object, const size_t object_size, uint8_t** signature_buffer, size_t* signature_buffer_size, uint8_t* key_buffer, uint32_t key_buffer_size, uint32_t* key_out_size) {
             Keymaster dev;
             if (!dev) return -1;
-            if (!key_blob || !object || !signature_buffer || !signature_buffer_size) return -1;
-        
             AuthorizationSet outParams;
             std::string key(reinterpret_cast<const char*>(key_blob), key_blob_size);
             std::string input(reinterpret_cast<const char*>(object), object_size);
             std::string output;
             KeymasterOperation op;
-        
             AuthorizationSet paramBuilder;
             paramBuilder.push_back(TAG_PADDING, PaddingMode::NONE);
             paramBuilder.push_back(TAG_DIGEST, Digest::NONE);
-        
             while (true) {
                 op = dev.begin(KeyPurpose::SIGN, key, paramBuilder, &outParams);
-                if (op.errorCode() == ErrorCode::KEY_RATE_LIMIT_EXCEEDED) {
-                    sleep(ratelimit);
-                    continue;
-                } else if (op.errorCode() == ErrorCode::KEY_REQUIRES_UPGRADE) {
+                if (op.errorCode() == ErrorCode::KEY_RATE_LIMIT_EXCEEDED) { sleep(ratelimit); continue; }
+                else if (op.errorCode() == ErrorCode::KEY_REQUIRES_UPGRADE) {
                     std::string newKey;
                     if (!dev.upgradeKey(key, paramBuilder, &newKey)) return -1;
                     if (key_out_size) *key_out_size = newKey.size();
@@ -450,11 +328,9 @@ jobs:
                     key = newKey;
                 } else break;
             }
-        
             if (op.errorCode() != ErrorCode::OK) return -1;
             if (!op.updateCompletely(input, &output)) return -1;
             if (!op.finish(&output)) return -1;
-        
             *signature_buffer = reinterpret_cast<uint8_t*>(malloc(output.size()));
             if (*signature_buffer == nullptr) return -1;
             *signature_buffer_size = output.size();
@@ -462,8 +338,8 @@ jobs:
             return 0;
         }
         EOF
-        
-        # 3. FIX KeyStorage3.cpp (Logic Builder & Macro Fix)
+
+        # FIX KeyStorage3.cpp
         cat > bootable/recovery/crypto/ext4crypt/KeyStorage3.cpp << 'EOF'
         #include "KeyStorage3.h"
         #include "Keymaster3.h"
@@ -486,20 +362,15 @@ jobs:
         #include <keystore/authorization_set.h>
         #include <keystore/keymaster_tags.h>
         #include <keystore/keystore_hidl_support.h>
-        
         extern "C" {
         #include "crypto_scrypt.h"
         }
         #include <iostream>
         #define ERROR 1
-        // [FIX] Removed conflicting macros
-        
-        // [FIX] Specific namespaces
         using android::hardware::keymaster::V3_0::KeyFormat;
         using android::hardware::keymaster::V3_0::KeyParameter;
         using KeystoreAuthorizationSet = ::keymaster::AuthorizationSet;
         using KeystoreErrorCode = ::keymaster::ErrorCode;
-        
         namespace android {
         namespace vold {
         const KeyAuthentication kEmptyAuthentication{"", ""};
@@ -525,7 +396,6 @@ jobs:
         static const char* kFn_secdiscardable = "secdiscardable";
         static const char* kFn_stretching = "stretching";
         static const char* kFn_version = "version";
-        
         static bool checkSize(const std::string& kind, size_t actual, size_t expected) {
             if (actual != expected) {
                 LOG(ERROR) << "Wrong number of bytes in " << kind << ", expected " << expected << " got " << actual;
@@ -533,7 +403,6 @@ jobs:
             }
             return true;
         }
-        
         static std::string hashWithPrefix(char const* prefix, const std::string& tohash) {
             SHA512_CTX c;
             SHA512_Init(&c);
@@ -545,8 +414,6 @@ jobs:
             SHA512_Final(reinterpret_cast<uint8_t*>(&res[0]), &c);
             return res;
         }
-        
-        // [FIX] Manual construction of AuthorizationSet
         static KeystoreAuthorizationSet beginParams(const KeyAuthentication& auth, const std::string& appId) {
             KeystoreAuthorizationSet params;
             params.push_back(::keymaster::TAG_BLOCK_MODE, ::keymaster::KM_MODE_GCM);
@@ -555,41 +422,26 @@ jobs:
             ::keymaster::keymaster_blob_t appIdBlob = { (uint8_t*)appId.data(), appId.size() };
             params.push_back(::keymaster::TAG_APPLICATION_ID, appIdBlob);
             if (!auth.token.empty()) {
-                LOG(DEBUG) << "Supplying auth token to Keymaster";
                 ::keymaster::keymaster_blob_t authBlob = { (uint8_t*)auth.token.data(), auth.token.size() };
                 params.push_back(::keymaster::TAG_AUTH_TOKEN, authBlob);
             }
             return params;
         }
-        
         static bool readFileToString(const std::string& filename, std::string* result) {
-            if (!android::base::ReadFileToString(filename, result)) {
-                PLOG(ERROR) << "Failed to read from " << filename;
-                return false;
-            }
+            if (!android::base::ReadFileToString(filename, result)) { PLOG(ERROR) << "Failed to read from " << filename; return false; }
             return true;
         }
-        
         static bool writeStringToFile(const std::string& payload, const std::string& filename) {
-            if (!android::base::WriteStringToFile(payload, filename)) {
-                PLOG(ERROR) << "Failed to write to " << filename;
-                return false;
-            }
+            if (!android::base::WriteStringToFile(payload, filename)) { PLOG(ERROR) << "Failed to write to " << filename; return false; }
             return true;
         }
-        
-        static KeymasterOperation begin(Keymaster& keymaster, const std::string& dir,
-                                        ::keymaster::KeyPurpose purpose,
-                                        const KeystoreAuthorizationSet &keyParams,
-                                        const KeystoreAuthorizationSet &opParams,
-                                        KeystoreAuthorizationSet* outParams) {
+        static KeymasterOperation begin(Keymaster& keymaster, const std::string& dir, ::keymaster::KeyPurpose purpose, const KeystoreAuthorizationSet &keyParams, const KeystoreAuthorizationSet &opParams, KeystoreAuthorizationSet* outParams) {
             auto kmKeyPath = dir + "/" + kFn_keymaster_key_blob;
             std::string kmKey;
             if (!readFileToString(kmKeyPath, &kmKey)) return KeymasterOperation();
             KeystoreAuthorizationSet inParams(keyParams);
             inParams.append(opParams.begin(), opParams.end());
             for (;;) {
-                // [FIX] Casting purpose
                 auto opHandle = keymaster.begin((android::hardware::keymaster::V3_0::KeyPurpose)purpose, kmKey, inParams, outParams);
                 if (opHandle) return opHandle;
                 if (opHandle.errorCode() != KeystoreErrorCode::KEY_REQUIRES_UPGRADE) return opHandle;
@@ -601,10 +453,7 @@ jobs:
                 LOG(INFO) << "Key upgraded: " << dir;
             }
         }
-        
-        static bool decryptWithKeymasterKey(Keymaster& keymaster, const std::string& dir,
-                                            const KeystoreAuthorizationSet &keyParams,
-                                            const std::string& ciphertext, std::string* message) {
+        static bool decryptWithKeymasterKey(Keymaster& keymaster, const std::string& dir, const KeystoreAuthorizationSet &keyParams, const std::string& ciphertext, std::string* message) {
             auto nonce = ciphertext.substr(0, GCM_NONCE_BYTES);
             auto bodyAndMac = ciphertext.substr(GCM_NONCE_BYTES);
             KeystoreAuthorizationSet opParams;
@@ -616,25 +465,19 @@ jobs:
             if (!opHandle.finish(nullptr)) return false;
             return true;
         }
-        
         static std::string getStretching(const KeyAuthentication& auth) {
-            if (!auth.usesKeymaster()) {
-                return kStretch_none;
-            } else if (auth.secret.empty()) {
-                return kStretch_nopassword;
-            } else {
+            if (!auth.usesKeymaster()) return kStretch_none;
+            else if (auth.secret.empty()) return kStretch_nopassword;
+            else {
                 char paramstr[PROPERTY_VALUE_MAX];
                 property_get(SCRYPT_PROP, paramstr, SCRYPT_DEFAULTS);
                 return std::string() + kStretchPrefix_scrypt + paramstr;
             }
         }
-        
         static bool stretchingNeedsSalt(const std::string& stretching) {
             return stretching != kStretch_nopassword && stretching != kStretch_none;
         }
-        
-        static bool stretchSecret(const std::string& stretching, const std::string& secret,
-                                  const std::string& salt, std::string* stretched) {
+        static bool stretchSecret(const std::string& stretching, const std::string& secret, const std::string& salt, std::string* stretched) {
             if (stretching == kStretch_nopassword) {
                 if (!secret.empty()) LOG(WARNING) << "Password present but stretching is nopassword";
                 stretched->clear();
@@ -644,86 +487,50 @@ jobs:
                 int Nf, rf, pf;
                 if (!parse_scrypt_parameters(stretching.substr(kStretchPrefix_scrypt.size()).c_str(), &Nf, &rf, &pf)) return false;
                 stretched->assign(STRETCHED_BYTES, '\0');
-                if (crypto_scrypt(reinterpret_cast<const uint8_t*>(secret.data()), secret.size(),
-                                  reinterpret_cast<const uint8_t*>(salt.data()), salt.size(),
-                                  1 << Nf, 1 << rf, 1 << pf,
-                                  reinterpret_cast<uint8_t*>(&(*stretched)[0]), stretched->size()) != 0) return false;
-            } else {
-                LOG(ERROR) << "Unknown stretching type: " << stretching;
-                return false;
-            }
+                if (crypto_scrypt(reinterpret_cast<const uint8_t*>(secret.data()), secret.size(), reinterpret_cast<const uint8_t*>(salt.data()), salt.size(), 1 << Nf, 1 << rf, 1 << pf, reinterpret_cast<uint8_t*>(&(*stretched)[0]), stretched->size()) != 0) return false;
+            } else { LOG(ERROR) << "Unknown stretching type: " << stretching; return false; }
             return true;
         }
-        
-        static bool generateAppId(const KeyAuthentication& auth, const std::string& stretching,
-                                  const std::string& salt, const std::string& secdiscardable,
-                                  std::string* appId) {
+        static bool generateAppId(const KeyAuthentication& auth, const std::string& stretching, const std::string& salt, const std::string& secdiscardable, std::string* appId) {
             std::string stretched;
             if (!stretchSecret(stretching, auth.secret, salt, &stretched)) return false;
             *appId = hashWithPrefix(kHashPrefix_secdiscardable, secdiscardable) + stretched;
             return true;
         }
-        
         static bool readRandomBytesOrLog(size_t count, std::string* out) {
             auto status = ReadRandomBytes(count, *out);
-            if (status != OK) {
-                LOG(ERROR) << "Random read failed with status: " << status;
-                return false;
-            }
+            if (status != OK) { LOG(ERROR) << "Random read failed"; return false; }
             return true;
         }
-        
-        static void logOpensslError() {
-            LOG(ERROR) << "Openssl error: " << ERR_get_error();
-        }
-        
-        static bool encryptWithoutKeymaster(const std::string& preKey,
-                                            const std::string& plaintext, std::string* ciphertext) {
+        static void logOpensslError() { LOG(ERROR) << "Openssl error: " << ERR_get_error(); }
+        static bool encryptWithoutKeymaster(const std::string& preKey, const std::string& plaintext, std::string* ciphertext) {
             auto key = hashWithPrefix(kHashPrefix_keygen, preKey);
             key.resize(AES_KEY_BYTES);
             if (!readRandomBytesOrLog(GCM_NONCE_BYTES, ciphertext)) return false;
-            auto ctx = std::unique_ptr<EVP_CIPHER_CTX, decltype(&::EVP_CIPHER_CTX_free)>(
-                EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_free);
+            auto ctx = std::unique_ptr<EVP_CIPHER_CTX, decltype(&::EVP_CIPHER_CTX_free)>(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_free);
             if (!ctx) return false;
-            if (1 != EVP_EncryptInit_ex(ctx.get(), EVP_aes_256_gcm(), NULL,
-                    reinterpret_cast<const uint8_t*>(key.data()),
-                    reinterpret_cast<const uint8_t*>(ciphertext->data()))) return false;
+            if (1 != EVP_EncryptInit_ex(ctx.get(), EVP_aes_256_gcm(), NULL, reinterpret_cast<const uint8_t*>(key.data()), reinterpret_cast<const uint8_t*>(ciphertext->data()))) return false;
             ciphertext->resize(GCM_NONCE_BYTES + plaintext.size() + GCM_MAC_BYTES);
             int outlen;
-            if (1 != EVP_EncryptUpdate(ctx.get(),
-                reinterpret_cast<uint8_t*>(&(*ciphertext)[0] + GCM_NONCE_BYTES), &outlen,
-                reinterpret_cast<const uint8_t*>(plaintext.data()), plaintext.size())) return false;
-            if (1 != EVP_EncryptFinal_ex(ctx.get(),
-                reinterpret_cast<uint8_t*>(&(*ciphertext)[0] + GCM_NONCE_BYTES + plaintext.size()), &outlen)) return false;
-            if (1 != EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_GET_TAG, GCM_MAC_BYTES,
-                reinterpret_cast<uint8_t*>(&(*ciphertext)[0] + GCM_NONCE_BYTES + plaintext.size()))) return false;
+            if (1 != EVP_EncryptUpdate(ctx.get(), reinterpret_cast<uint8_t*>(&(*ciphertext)[0] + GCM_NONCE_BYTES), &outlen, reinterpret_cast<const uint8_t*>(plaintext.data()), plaintext.size())) return false;
+            if (1 != EVP_EncryptFinal_ex(ctx.get(), reinterpret_cast<uint8_t*>(&(*ciphertext)[0] + GCM_NONCE_BYTES + plaintext.size()), &outlen)) return false;
+            if (1 != EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_GET_TAG, GCM_MAC_BYTES, reinterpret_cast<uint8_t*>(&(*ciphertext)[0] + GCM_NONCE_BYTES + plaintext.size()))) return false;
             return true;
         }
-        
-        static bool decryptWithoutKeymaster(const std::string& preKey,
-                                            const std::string& ciphertext, std::string* plaintext) {
+        static bool decryptWithoutKeymaster(const std::string& preKey, const std::string& ciphertext, std::string* plaintext) {
             if (ciphertext.size() < GCM_NONCE_BYTES + GCM_MAC_BYTES) return false;
             auto key = hashWithPrefix(kHashPrefix_keygen, preKey);
             key.resize(AES_KEY_BYTES);
-            auto ctx = std::unique_ptr<EVP_CIPHER_CTX, decltype(&::EVP_CIPHER_CTX_free)>(
-                EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_free);
+            auto ctx = std::unique_ptr<EVP_CIPHER_CTX, decltype(&::EVP_CIPHER_CTX_free)>(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_free);
             if (!ctx) return false;
-            if (1 != EVP_DecryptInit_ex(ctx.get(), EVP_aes_256_gcm(), NULL,
-                    reinterpret_cast<const uint8_t*>(key.data()),
-                    reinterpret_cast<const uint8_t*>(ciphertext.data()))) return false;
+            if (1 != EVP_DecryptInit_ex(ctx.get(), EVP_aes_256_gcm(), NULL, reinterpret_cast<const uint8_t*>(key.data()), reinterpret_cast<const uint8_t*>(ciphertext.data()))) return false;
             plaintext->resize(ciphertext.size() - GCM_NONCE_BYTES - GCM_MAC_BYTES);
             int outlen;
-            if (1 != EVP_DecryptUpdate(ctx.get(),
-                reinterpret_cast<uint8_t*>(&(*plaintext)[0]), &outlen,
-                reinterpret_cast<const uint8_t*>(ciphertext.data() + GCM_NONCE_BYTES), plaintext->size())) return false;
-            if (1 != EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_SET_TAG, GCM_MAC_BYTES,
-                const_cast<void *>(
-                    reinterpret_cast<const void*>(ciphertext.data() + GCM_NONCE_BYTES + plaintext->size())))) return false;
-            if (1 != EVP_DecryptFinal_ex(ctx.get(),
-                reinterpret_cast<uint8_t*>(&(*plaintext)[0] + plaintext->size()), &outlen)) return false;
+            if (1 != EVP_DecryptUpdate(ctx.get(), reinterpret_cast<uint8_t*>(&(*plaintext)[0]), &outlen, reinterpret_cast<const uint8_t*>(ciphertext.data() + GCM_NONCE_BYTES), plaintext->size())) return false;
+            if (1 != EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_SET_TAG, GCM_MAC_BYTES, const_cast<void *>(reinterpret_cast<const void*>(ciphertext.data() + GCM_NONCE_BYTES + plaintext->size())))) return false;
+            if (1 != EVP_DecryptFinal_ex(ctx.get(), reinterpret_cast<uint8_t*>(&(*plaintext)[0] + plaintext->size()), &outlen)) return false;
             return true;
         }
-        
         bool retrieveKey(const std::string& dir, const KeyAuthentication& auth, std::string* key) {
             std::string version;
             if (!readFileToString(dir + "/" + kFn_version, &version)) return false;
@@ -733,9 +540,7 @@ jobs:
             std::string stretching;
             if (!readFileToString(dir + "/" + kFn_stretching, &stretching)) return false;
             std::string salt;
-            if (stretchingNeedsSalt(stretching)) {
-                if (!readFileToString(dir + "/" + kFn_salt, &salt)) return false;
-            }
+            if (stretchingNeedsSalt(stretching)) { if (!readFileToString(dir + "/" + kFn_salt, &salt)) return false; }
             std::string appId;
             if (!generateAppId(auth, stretching, salt, secdiscardable, &appId)) return false;
             std::string encryptedMessage;
@@ -750,7 +555,6 @@ jobs:
             }
             return true;
         }
-        
         static bool deleteKey(const std::string& dir) {
             std::string kmKey;
             if (!readFileToString(dir + "/" + kFn_keymaster_key_blob, &kmKey)) return false;
@@ -759,23 +563,18 @@ jobs:
             if (!keymaster.deleteKey(kmKey)) return false;
             return true;
         }
-        
         static bool runSecdiscard(const std::string& dir) {
-            if (ForkExecvp(std::vector<std::string>{kSecdiscardPath, "--", dir + "/" + kFn_encrypted_key,
-                dir + "/" + kFn_keymaster_key_blob, dir + "/" + kFn_secdiscardable}) != 0) return false;
+            if (ForkExecvp(std::vector<std::string>{kSecdiscardPath, "--", dir + "/" + kFn_encrypted_key, dir + "/" + kFn_keymaster_key_blob, dir + "/" + kFn_secdiscardable}) != 0) return false;
             return true;
         }
-        
         bool runSecdiscardSingle(const std::string& file) {
             if (ForkExecvp(std::vector<std::string>{kSecdiscardPath, "--", file}) != 0) return false;
             return true;
         }
-        
         static bool recursiveDeleteKey(const std::string& dir) {
             if (ForkExecvp(std::vector<std::string>{kRmPath, "-rf", dir}) != 0) return false;
             return true;
         }
-        
         bool destroyKey(const std::string& dir) {
             bool success = true;
             success &= deleteKey(dir);
@@ -783,11 +582,14 @@ jobs:
             success &= recursiveDeleteKey(dir);
             return success;
         }
-        
-        }  // namespace vold
-        }  // namespace android
+        }
+        }
         EOF
-        echo "Done applying modifications."
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    - name: Build recovery
+      run: |
+        cd ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
         set +e
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
@@ -795,7 +597,6 @@ jobs:
         lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
         make clean && mka ${{ github.event.inputs.BUILD_TARGET }}image -j$(nproc --all)
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
-   #   continue-on-error: true
 
     - name: Check the output directory before uploading
       run: |
