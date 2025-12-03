@@ -105,12 +105,17 @@ jobs:
     - name: Fix Cryptfs HW Issue
       run: |
         cd ${{ steps.pwd.outputs.workspace-folder }}/twrp
-        # Hapus Android.bp yang bermasalah agar fallback ke Android.mk
-        if [ -f vendor/qcom/opensource/commonsys/cryptfs_hw/Android.bp ]; then
-          rm vendor/qcom/opensource/commonsys/cryptfs_hw/Android.bp
-          echo "Removed problematic Android.bp from cryptfs_hw"
+        echo "Mencari lokasi Android.bp yang bermasalah..."
+        # Cari file Android.bp yang berada di folder bernama cryptfs_hw
+        TARGET_FILE=$(find vendor -type f -name "Android.bp" | grep "cryptfs_hw" | head -n 1)
+        
+        if [ ! -z "$TARGET_FILE" ]; then
+            echo "Ditemukan file bermasalah di: $TARGET_FILE"
+            rm "$TARGET_FILE"
+            echo "File berhasil dihapus. Build akan fallback ke Android.mk"
         else
-          echo "Android.bp not found, skipping..."
+            echo "PERINGATAN: File Android.bp tidak ditemukan menggunakan 'find'. Coba patching manual jika build gagal."
+            # Opsi cadangan: Patching file jika path-nya memang aneh, tapi biasanya 'find' di atas sudah cukup
         fi
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
