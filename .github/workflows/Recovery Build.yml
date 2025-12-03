@@ -102,6 +102,18 @@ jobs:
         sudo ln -sf /usr/bin/python2 /usr/bin/python
       continue-on-error: true
 
+    - name: Fix Cryptfs HW Issue
+      run: |
+        cd ${{ steps.pwd.outputs.workspace-folder }}/twrp
+        # Hapus Android.bp yang bermasalah agar fallback ke Android.mk
+        if [ -f vendor/qcom/opensource/commonsys/cryptfs_hw/Android.bp ]; then
+          rm vendor/qcom/opensource/commonsys/cryptfs_hw/Android.bp
+          echo "Removed problematic Android.bp from cryptfs_hw"
+        else
+          echo "Android.bp not found, skipping..."
+        fi
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
     - name: Build Recovery
       run: |
         cd ${{ steps.pwd.outputs.workspace-folder }}/twrp
