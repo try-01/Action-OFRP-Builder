@@ -102,8 +102,16 @@ jobs:
         sudo ln -sf /usr/bin/python2 /usr/bin/python
       continue-on-error: true
 
+    - name: Set up Python 2
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y python2
+        sudo ln -sf /usr/bin/python2 /usr/bin/python
+      continue-on-error: true
+
     - name: Apply Crypto Patches (Python Script)
-      shell: python
+      # PERBAIKAN DI SINI: Gunakan python3 secara eksplisit
+      shell: python3 {0} 
       run: |
         import os
         import shutil
@@ -115,11 +123,27 @@ jobs:
             print("Wrote file: " + path)
 
         # 1. FIX HEADER LOCATIONS
+        # Python 3 mendukung exist_ok=True
         os.makedirs("system/security/keystore/include/keystore", exist_ok=True)
-        shutil.copy("system/keymaster/include/keymaster/authorization_set.h", "system/security/keystore/include/keystore/authorization_set.h")
-        shutil.copy("system/keymaster/include/keymaster/keymaster_tags.h", "system/security/keystore/include/keystore/keymaster_tags.h")
-        print("Headers copied successfully.")
+        
+        # Cek apakah file sumber ada sebelum copy untuk menghindari error file not found
+        src_auth = "system/keymaster/include/keymaster/authorization_set.h"
+        src_tags = "system/keymaster/include/keymaster/keymaster_tags.h"
+        
+        if os.path.exists(src_auth):
+            shutil.copy(src_auth, "system/security/keystore/include/keystore/authorization_set.h")
+            print("Copied authorization_set.h")
+        else:
+            print("WARNING: Source authorization_set.h not found at " + src_auth)
 
+        if os.path.exists(src_tags):
+            shutil.copy(src_tags, "system/security/keystore/include/keystore/keymaster_tags.h")
+            print("Copied keymaster_tags.h")
+        else:
+            print("WARNING: Source keymaster_tags.h not found at " + src_tags)
+
+        # ... (lanjutan script python sama seperti sebelumnya) ...
+        
         # 2. CONTENT FOR Keymaster3.h (Fixed Namespace)
         km3_h_content = r"""
         #ifndef ANDROID_VOLD_KEYMASTER_H
@@ -497,28 +521,43 @@ jobs:
             auto key = hashWithPrefix(kHashPrefix_keygen, preKey);
             key.resize(AES_KEY_BYTES);
             if (!readRandomBytesOrLog(GCM_NONCE_BYTES, ciphertext)) return false;
-            auto ctx = std::unique_ptr<EVP_CIPHER_CTX, decltype(&::EVP_CIPHER_CTX_free)>(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_free);
+            auto ctx = std::unique_ptr<EVP_CIPHER_CTX, decltype(&::EVP_CIPHER_CTX_free)>(
+                EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_free);
             if (!ctx) return false;
-            if (1 != EVP_EncryptInit_ex(ctx.get(), EVP_aes_256_gcm(), NULL, reinterpret_cast<const uint8_t*>(key.data()), reinterpret_cast<const uint8_t*>(ciphertext->data()))) return false;
+            if (1 != EVP_EncryptInit_ex(ctx.get(), EVP_aes_256_gcm(), NULL,
+                    reinterpret_cast<const uint8_t*>(key.data()),
+                    reinterpret_cast<const uint8_t*>(ciphertext->data()))) return false;
             ciphertext->resize(GCM_NONCE_BYTES + plaintext.size() + GCM_MAC_BYTES);
             int outlen;
-            if (1 != EVP_EncryptUpdate(ctx.get(), reinterpret_cast<uint8_t*>(&(*ciphertext)[0] + GCM_NONCE_BYTES), &outlen, reinterpret_cast<const uint8_t*>(plaintext.data()), plaintext.size())) return false;
-            if (1 != EVP_EncryptFinal_ex(ctx.get(), reinterpret_cast<uint8_t*>(&(*ciphertext)[0] + GCM_NONCE_BYTES + plaintext.size()), &outlen)) return false;
-            if (1 != EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_GET_TAG, GCM_MAC_BYTES, reinterpret_cast<uint8_t*>(&(*ciphertext)[0] + GCM_NONCE_BYTES + plaintext.size()))) return false;
+            if (1 != EVP_EncryptUpdate(ctx.get(),
+                reinterpret_cast<uint8_t*>(&(*ciphertext)[0] + GCM_NONCE_BYTES), &outlen,
+                reinterpret_cast<const uint8_t*>(plaintext.data()), plaintext.size())) return false;
+            if (1 != EVP_EncryptFinal_ex(ctx.get(),
+                reinterpret_cast<uint8_t*>(&(*ciphertext)[0] + GCM_NONCE_BYTES + plaintext.size()), &outlen)) return false;
+            if (1 != EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_GET_TAG, GCM_MAC_BYTES,
+                reinterpret_cast<uint8_t*>(&(*ciphertext)[0] + GCM_NONCE_BYTES + plaintext.size()))) return false;
             return true;
         }
         static bool decryptWithoutKeymaster(const std::string& preKey, const std::string& ciphertext, std::string* plaintext) {
             if (ciphertext.size() < GCM_NONCE_BYTES + GCM_MAC_BYTES) return false;
             auto key = hashWithPrefix(kHashPrefix_keygen, preKey);
             key.resize(AES_KEY_BYTES);
-            auto ctx = std::unique_ptr<EVP_CIPHER_CTX, decltype(&::EVP_CIPHER_CTX_free)>(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_free);
+            auto ctx = std::unique_ptr<EVP_CIPHER_CTX, decltype(&::EVP_CIPHER_CTX_free)>(
+                EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_free);
             if (!ctx) return false;
-            if (1 != EVP_DecryptInit_ex(ctx.get(), EVP_aes_256_gcm(), NULL, reinterpret_cast<const uint8_t*>(key.data()), reinterpret_cast<const uint8_t*>(ciphertext.data()))) return false;
+            if (1 != EVP_DecryptInit_ex(ctx.get(), EVP_aes_256_gcm(), NULL,
+                    reinterpret_cast<const uint8_t*>(key.data()),
+                    reinterpret_cast<const uint8_t*>(ciphertext.data()))) return false;
             plaintext->resize(ciphertext.size() - GCM_NONCE_BYTES - GCM_MAC_BYTES);
             int outlen;
-            if (1 != EVP_DecryptUpdate(ctx.get(), reinterpret_cast<uint8_t*>(&(*plaintext)[0]), &outlen, reinterpret_cast<const uint8_t*>(ciphertext.data() + GCM_NONCE_BYTES), plaintext->size())) return false;
-            if (1 != EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_SET_TAG, GCM_MAC_BYTES, const_cast<void *>(reinterpret_cast<const void*>(ciphertext.data() + GCM_NONCE_BYTES + plaintext->size())))) return false;
-            if (1 != EVP_DecryptFinal_ex(ctx.get(), reinterpret_cast<uint8_t*>(&(*plaintext)[0] + plaintext->size()), &outlen)) return false;
+            if (1 != EVP_DecryptUpdate(ctx.get(),
+                reinterpret_cast<uint8_t*>(&(*plaintext)[0]), &outlen,
+                reinterpret_cast<const uint8_t*>(ciphertext.data() + GCM_NONCE_BYTES), plaintext->size())) return false;
+            if (1 != EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_SET_TAG, GCM_MAC_BYTES,
+                const_cast<void *>(
+                    reinterpret_cast<const void*>(ciphertext.data() + GCM_NONCE_BYTES + plaintext->size())))) return false;
+            if (1 != EVP_DecryptFinal_ex(ctx.get(),
+                reinterpret_cast<uint8_t*>(&(*plaintext)[0] + plaintext->size()), &outlen)) return false;
             return true;
         }
         bool retrieveKey(const std::string& dir, const KeyAuthentication& auth, std::string* key) {
@@ -530,7 +569,9 @@ jobs:
             std::string stretching;
             if (!readFileToString(dir + "/" + kFn_stretching, &stretching)) return false;
             std::string salt;
-            if (stretchingNeedsSalt(stretching)) { if (!readFileToString(dir + "/" + kFn_salt, &salt)) return false; }
+            if (stretchingNeedsSalt(stretching)) {
+                if (!readFileToString(dir + "/" + kFn_salt, &salt)) return false;
+            }
             std::string appId;
             if (!generateAppId(auth, stretching, salt, secdiscardable, &appId)) return false;
             std::string encryptedMessage;
@@ -554,26 +595,41 @@ jobs:
             return true;
         }
         static bool runSecdiscard(const std::string& dir) {
-            if (ForkExecvp(std::vector<std::string>{kSecdiscardPath, "--", dir + "/" + kFn_encrypted_key, dir + "/" + kFn_keymaster_key_blob, dir + "/" + kFn_secdiscardable}) != 0) return false;
+            if (ForkExecvp(std::vector<std::string>{kSecdiscardPath, "--",
+                dir + "/" + kFn_encrypted_key,
+                dir + "/" + kFn_keymaster_key_blob,
+                dir + "/" + kFn_secdiscardable,
+                }) != 0) {
+                LOG(ERROR) << "secdiscard failed";
+                return false;
+            }
             return true;
         }
         bool runSecdiscardSingle(const std::string& file) {
-            if (ForkExecvp(std::vector<std::string>{kSecdiscardPath, "--", file}) != 0) return false;
+            if (ForkExecvp(std::vector<std::string>{kSecdiscardPath, "--",
+                file}) != 0) {
+                LOG(ERROR) << "secdiscard failed";
+                return false;
+            }
             return true;
         }
         static bool recursiveDeleteKey(const std::string& dir) {
-            if (ForkExecvp(std::vector<std::string>{kRmPath, "-rf", dir}) != 0) return false;
+            if (ForkExecvp(std::vector<std::string>{kRmPath, "-rf", dir}) != 0) {
+                LOG(ERROR) << "recursive delete failed";
+                return false;
+            }
             return true;
         }
         bool destroyKey(const std::string& dir) {
             bool success = true;
+            // Try each thing, even if previous things failed.
             success &= deleteKey(dir);
             success &= runSecdiscard(dir);
             success &= recursiveDeleteKey(dir);
             return success;
         }
-        }
-        }
+        }  // namespace vold
+        }  // namespace android
         """
 
         write_file("bootable/recovery/crypto/ext4crypt/Keymaster3.h", km3_h_content)
