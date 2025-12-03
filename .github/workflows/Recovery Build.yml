@@ -102,36 +102,26 @@ jobs:
         sudo ln -sf /usr/bin/python2 /usr/bin/python
       continue-on-error: true
 
-    - name: Apply Crypto Fixes (Manual Patching)
+    - name: Apply Crypto Patches (Python Script)
+      shell: python
       run: |
-        cd ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
-        
-        echo "=== 1. Fixing Header Locations ==="
-        mkdir -p system/security/keystore/include/keystore
-        cp system/keymaster/include/keymaster/authorization_set.h system/security/keystore/include/keystore/
-        cp system/keymaster/include/keymaster/keymaster_tags.h system/security/keystore/include/keystore/
-        
-        echo "=== 2. Patching Android.mk Files (Force KM 3.0) ==="
-        # Patch fde/Android.mk
-        sed -i '/^bool verify_package_compatibility(ZipWrap \*zw) {/,/^}/c bool verify_package_compatibility(ZipWrap *zw) { // NOLINT\n   (void)zw; // Mark parameter as intentionally unused\n   printf("OrangeFox: Forcefully bypassing Treble compatibility check via patch.\\n");\n   return true;\n}' "./bootable/recovery/installcommand.cpp"
-        sed -i '21s/-ge 28/-ge 99/g' "./bootable/recovery/crypto/ext4crypt/Android.mk"
-        sed -i '25s/-ge 28/-ge 99/g' "./bootable/recovery/crypto/fde/Android.mk"
-        sed -i '80s/-ge 28/-ge 99/g' "./bootable/recovery/crypto/fde/Android.mk"
-        sed -i '91d' "./bootable/recovery/crypto/fde/Android.mk"
-        sed -i '36d' "./bootable/recovery/crypto/fde/Android.mk"
-        sed -i '57,59d' "./bootable/recovery/crypto/ext4crypt/Android.mk"
-        sed -i '34s/$/ -Wno-unused-variable -Wno-sign-compare -Wno-unused-parameter -Wno-comment/' "./bootable/recovery/crypto/ext4crypt/Android.mk"
-        sed -i '10s|$| system/security system/security/keystore/include system/security/keystore system/keymaster/include hardware/libhardware/include/hardware|' "./bootable/recovery/crypto/fde/Android.mk"
-        sed -i '68s|$| system/security system/security/keystore/include system/security/keystore system/keymaster/include hardware/libhardware/include/hardware|' "./bootable/recovery/crypto/fde/Android.mk"
-        sed -i '36s|$| -Wno-unused-variable -Wno-sign-compare -Wno-unused-parameter -Wno-comment|' "./bootable/recovery/crypto/fde/Android.mk"
-        sed -i '90s|$| -Wno-unused-variable -Wno-sign-compare -Wno-unused-parameter -Wno-comment|' "./bootable/recovery/crypto/fde/Android.mk"
-        sed -i '11s|system/security/keystore|system/security system/security/keystore system/security/keystore/include|' "./bootable/recovery/crypto/ext4crypt/Android.mk"
-        sed -i '34s|$| -Wno-unused-function|' "./bootable/recovery/crypto/ext4crypt/Android.mk"
+        import os
+        import shutil
 
-        echo "=== 3. Overwriting C++ Source Files ==="
-        
-        # FIX Keymaster3.h (Namespace Fix)
-        cat > bootable/recovery/crypto/ext4crypt/Keymaster3.h << 'EOF'
+        # Helper function to write file
+        def write_file(path, content):
+            with open(path, "w") as f:
+                f.write(content)
+            print("Wrote file: " + path)
+
+        # 1. FIX HEADER LOCATIONS
+        os.makedirs("system/security/keystore/include/keystore", exist_ok=True)
+        shutil.copy("system/keymaster/include/keymaster/authorization_set.h", "system/security/keystore/include/keystore/authorization_set.h")
+        shutil.copy("system/keymaster/include/keymaster/keymaster_tags.h", "system/security/keystore/include/keystore/keymaster_tags.h")
+        print("Headers copied successfully.")
+
+        # 2. CONTENT FOR Keymaster3.h (Fixed Namespace)
+        km3_h_content = r"""
         #ifndef ANDROID_VOLD_KEYMASTER_H
         #define ANDROID_VOLD_KEYMASTER_H
         #ifdef __cplusplus
@@ -218,10 +208,10 @@ jobs:
         int keymaster_sign_object_for_cryptfs_scrypt(const uint8_t* key_blob, size_t key_blob_size, uint32_t ratelimit, const uint8_t* object, const size_t object_size, uint8_t** signature_buffer, size_t* signature_buffer_size, uint8_t* key_buffer, uint32_t key_buffer_size, uint32_t* key_out_size);
         __END_DECLS
         #endif
-        EOF
+        """
 
-        # FIX Keymaster3.cpp
-        cat > bootable/recovery/crypto/ext4crypt/Keymaster3.cpp << 'EOF'
+        # 3. CONTENT FOR Keymaster3.cpp
+        km3_cpp_content = r"""
         #include "Keymaster3.h"
         #include <keystore/keymaster_tags.h>
         #include <keystore/authorization_set.h>
@@ -337,10 +327,10 @@ jobs:
             std::copy(output.data(), output.data() + output.size(), *signature_buffer);
             return 0;
         }
-        EOF
+        """
 
-        # FIX KeyStorage3.cpp
-        cat > bootable/recovery/crypto/ext4crypt/KeyStorage3.cpp << 'EOF'
+        # 4. CONTENT FOR KeyStorage3.cpp
+        ks3_cpp_content = r"""
         #include "KeyStorage3.h"
         #include "Keymaster3.h"
         #include "ScryptParameters.h"
@@ -584,7 +574,32 @@ jobs:
         }
         }
         }
-        EOF
+        """
+
+        write_file("bootable/recovery/crypto/ext4crypt/Keymaster3.h", km3_h_content)
+        write_file("bootable/recovery/crypto/ext4crypt/Keymaster3.cpp", km3_cpp_content)
+        write_file("bootable/recovery/crypto/ext4crypt/KeyStorage3.cpp", ks3_cpp_content)
+        
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
+
+    - name: Patch Makefiles (Sed)
+      run: |
+        cd ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
+        # Patch fde/Android.mk
+        sed -i '/^bool verify_package_compatibility(ZipWrap \*zw) {/,/^}/c bool verify_package_compatibility(ZipWrap *zw) { // NOLINT\n   (void)zw; // Mark parameter as intentionally unused\n   printf("OrangeFox: Forcefully bypassing Treble compatibility check via patch.\\n");\n   return true;\n}' "./bootable/recovery/installcommand.cpp"
+        sed -i '21s/-ge 28/-ge 99/g' "./bootable/recovery/crypto/ext4crypt/Android.mk"
+        sed -i '25s/-ge 28/-ge 99/g' "./bootable/recovery/crypto/fde/Android.mk"
+        sed -i '80s/-ge 28/-ge 99/g' "./bootable/recovery/crypto/fde/Android.mk"
+        sed -i '91d' "./bootable/recovery/crypto/fde/Android.mk"
+        sed -i '36d' "./bootable/recovery/crypto/fde/Android.mk"
+        sed -i '57,59d' "./bootable/recovery/crypto/ext4crypt/Android.mk"
+        sed -i '34s/$/ -Wno-unused-variable -Wno-sign-compare -Wno-unused-parameter -Wno-comment/' "./bootable/recovery/crypto/ext4crypt/Android.mk"
+        sed -i '10s|$| system/security system/security/keystore/include system/security/keystore system/keymaster/include hardware/libhardware/include/hardware|' "./bootable/recovery/crypto/fde/Android.mk"
+        sed -i '68s|$| system/security system/security/keystore/include system/security/keystore system/keymaster/include hardware/libhardware/include/hardware|' "./bootable/recovery/crypto/fde/Android.mk"
+        sed -i '36s|$| -Wno-unused-variable -Wno-sign-compare -Wno-unused-parameter -Wno-comment|' "./bootable/recovery/crypto/fde/Android.mk"
+        sed -i '90s|$| -Wno-unused-variable -Wno-sign-compare -Wno-unused-parameter -Wno-comment|' "./bootable/recovery/crypto/fde/Android.mk"
+        sed -i '11s|system/security/keystore|system/security system/security/keystore system/security/keystore/include|' "./bootable/recovery/crypto/ext4crypt/Android.mk"
+        sed -i '34s|$| -Wno-unused-function|' "./bootable/recovery/crypto/ext4crypt/Android.mk"
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
     - name: Build recovery
