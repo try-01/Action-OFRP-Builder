@@ -102,21 +102,45 @@ jobs:
         sudo ln -sf /usr/bin/python2 /usr/bin/python
       continue-on-error: true
 
-    - name: Fix Cryptfs HW Issue
+    - name: Replace Cryptfs HW with LineageOS 15.1 Version
       run: |
         cd ${{ steps.pwd.outputs.workspace-folder }}/twrp
-        echo "Mencari lokasi Android.bp yang bermasalah..."
-        # Cari file Android.bp yang berada di folder bernama cryptfs_hw
-        TARGET_FILE=$(find vendor -type f -name "Android.bp" | grep "cryptfs_hw" | head -n 1)
         
-        if [ ! -z "$TARGET_FILE" ]; then
-            echo "Ditemukan file bermasalah di: $TARGET_FILE"
-            rm "$TARGET_FILE"
-            echo "File berhasil dihapus. Build akan fallback ke Android.mk"
+        # 1. Tentukan lokasi folder berdasarkan error log sebelumnya
+        # Kita cek apakah ada di 'commonsys' atau langsung di 'opensource'
+        if [ -d "vendor/qcom/opensource/commonsys/cryptfs_hw" ]; then
+            TARGET_DIR="vendor/qcom/opensource/commonsys/cryptfs_hw"
+            PARENT_DIR="vendor/qcom/opensource/commonsys"
+        elif [ -d "vendor/qcom/opensource/cryptfs_hw" ]; then
+            TARGET_DIR="vendor/qcom/opensource/cryptfs_hw"
+            PARENT_DIR="vendor/qcom/opensource"
         else
-            echo "PERINGATAN: File Android.bp tidak ditemukan menggunakan 'find'. Coba patching manual jika build gagal."
-            # Opsi cadangan: Patching file jika path-nya memang aneh, tapi biasanya 'find' di atas sudah cukup
+            echo "ERROR: Folder cryptfs_hw tidak ditemukan di lokasi standar!"
+            # Debugging: Tampilkan struktur folder vendor untuk melihat di mana dia sembunyi
+            find vendor -maxdepth 5 -type d -name "cryptfs_hw"
+            exit 1
         fi
+        
+        echo "Lokasi cryptfs_hw ditemukan di: $TARGET_DIR"
+        
+        # 2. Hapus folder bawaan yang bermasalah
+        rm -rf "$TARGET_DIR"
+        
+        # 3. Clone repository LineageOS 15.1 (yang pasti punya Android.mk)
+        # Kita clone langsung ke lokasi target
+        git clone https://github.com/LineageOS/android_vendor_qcom_opensource_cryptfs_hw.git -b lineage-15.1 "$TARGET_DIR"
+        
+        # 4. Verifikasi bahwa Android.mk sekarang sudah ada
+        if [ -f "$TARGET_DIR/Android.mk" ]; then
+            echo "SUKSES: Android.mk ditemukan. Build siap dilanjutkan."
+        else
+            echo "GAGAL: Android.mk tidak ditemukan setelah cloning."
+            exit 1
+        fi
+        
+        # 5. Bersihkan cache build lama
+        rm -rf out/soong/.bootstrap
+        
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
     - name: Build Recovery
