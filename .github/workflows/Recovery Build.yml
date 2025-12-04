@@ -104,17 +104,6 @@ jobs:
 
     - name: DEBUG - Locate
       run: |
-        cd ${{ steps.pwd.outputs.workspace-folder }}
-        ls -l
-        ls -l vendor/
-        echo "============================================="
-        echo "Mencari file authorization_set.h di seluruh source..."
-        find vendor -name "cryptfs_hw.c"
-        find vendor -name "cryptfs_hw.h"
-        echo "============================================="
-        echo "Cek isi folder system/security/keystore:"
-        ls -R vendor || echo "Folder vendor tidak ditemukan"
-        echo "============================================="
         cd ${{ steps.pwd.outputs.workspace-folder }}/twrp
         ls -l
         ls -l vendor/
