@@ -110,34 +110,37 @@ jobs:
         export ALLOW_MISSING_DEPENDENCIES=true
         source build/envsetup.sh
         
-        # 2. Jalankan Lunch (Ini akan memicu download otomatis/Roomservice)
+        # 2. Jalankan Lunch (Biarkan Roomservice berjalan)
         lunch omni_${{ github.event.inputs.DEVICE_NAME }}-eng
         
         # =========================================================
-        # INTERVENSI: PERBAIKAN CRYPTFS_HW (LINEAGEOS 15.1)
-        # Dilakukan setelah lunch agar tidak tertimpa oleh Roomservice
+        # INTERVENSI: PERBAIKAN CRYPTFS_HW & CLEANUP SOONG
         # =========================================================
         echo "=== MEMULAI PERBAIKAN CRYPTFS_HW ==="
         TARGET_CRYPT="vendor/qcom/opensource/commonsys/cryptfs_hw"
+        PARENT_BP="vendor/qcom/opensource/commonsys/Android.bp"
         
-        # Hapus folder yang baru saja didownload oleh lunch (yang bermasalah)
-        if [ -d "$TARGET_CRYPT" ]; then
-            echo "Menghapus repository cryptfs_hw yang salah..."
-            rm -rf "$TARGET_CRYPT"
-        fi
+        # Hapus folder cryptfs_hw bawaan yang rusak
+        rm -rf "$TARGET_CRYPT"
         
-        # Clone ulang versi LineageOS 15.1 yang benar
-        echo "Mengambil cryptfs_hw versi LineageOS 15.1..."
+        # Clone ulang versi LineageOS 15.1
         git clone https://github.com/LineageOS/android_vendor_qcom_opensource_cryptfs_hw.git \
             -b lineage-15.1 "$TARGET_CRYPT"
         
-        # Hapus Android.bp untuk memaksa penggunaan Android.mk (jika ada)
+        # Hapus Android.bp di dalam cryptfs_hw (agar pakai Android.mk)
         if [ -f "$TARGET_CRYPT/Android.bp" ]; then
-            echo "Menghapus Android.bp untuk mencegah error Soong..."
             rm "$TARGET_CRYPT/Android.bp"
         fi
         
-        # Bersihkan cache build (PENTING)
+        # --- PERBAIKAN TAMBAHAN (KRUSIAL) ---
+        # Edit file induk commonsys/Android.bp agar TIDAK mencari cryptfs_hw/Android.bp lagi
+        if [ -f "$PARENT_BP" ]; then
+            echo "Memperbaiki referensi di $PARENT_BP..."
+            # Hapus baris yang mengandung "cryptfs_hw"
+            sed -i '/cryptfs_hw/d' "$PARENT_BP"
+        fi
+        
+        # Bersihkan cache build
         rm -rf out/soong/.bootstrap
         echo "=== PERBAIKAN SELESAI ==="
         # =========================================================
