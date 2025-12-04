@@ -114,12 +114,13 @@ jobs:
         lunch omni_${{ github.event.inputs.DEVICE_NAME }}-eng
         
         # =========================================================
-        # INTERVENSI: PERBAIKAN CRYPTFS_HW & LINKING
+        # INTERVENSI: PERBAIKAN CRYPTFS_HW FULL FIX
         # =========================================================
         echo "=== MEMULAI PERBAIKAN CRYPTFS_HW ==="
         TARGET_CRYPT="vendor/qcom/opensource/commonsys/cryptfs_hw"
         PARENT_BP="vendor/qcom/opensource/commonsys/Android.bp"
         PARENT_MK="vendor/qcom/opensource/commonsys/Android.mk"
+        CRYPT_MK="$TARGET_CRYPT/Android.mk"
         
         # A. Reset Folder cryptfs_hw
         rm -rf "$TARGET_CRYPT"
@@ -137,14 +138,34 @@ jobs:
         fi
         
         # D. TAMBAHKAN ke Android.mk induk (agar Make membacanya)
-        # Kita append (tambahkan di baris paling bawah)
         if [ -f "$PARENT_MK" ]; then
-            echo "" >> "$PARENT_MK"
-            echo "# Added by GitHub Actions for TWRP Encryption" >> "$PARENT_MK"
-            echo "include \$(LOCAL_PATH)/cryptfs_hw/Android.mk" >> "$PARENT_MK"
-            echo "Sukses menambahkan cryptfs_hw ke $PARENT_MK"
+            # Cek dulu apakah sudah ada include-nya supaya tidak duplikat
+            if ! grep -q "cryptfs_hw/Android.mk" "$PARENT_MK"; then
+                echo "" >> "$PARENT_MK"
+                echo "# Added by GitHub Actions for TWRP Encryption" >> "$PARENT_MK"
+                echo "include \$(LOCAL_PATH)/cryptfs_hw/Android.mk" >> "$PARENT_MK"
+                echo "Sukses menambahkan cryptfs_hw ke $PARENT_MK"
+            fi
         else
             echo "WARNING: $PARENT_MK tidak ditemukan!"
+        fi
+
+        # F. PATCH Android.mk cryptfs_hw (FIX ERROR KERNEL_OBJ)
+        # Menghapus baris yang mewajibkan KERNEL_OBJ (penyebab Ninja Error)
+        if [ -f "$CRYPT_MK" ]; then
+            echo "Patching $CRYPT_MK untuk menghapus dependency KERNEL_OBJ..."
+            
+            # Hapus baris LOCAL_ADDITIONAL_DEPENDENCIES yang meminta KERNEL_OBJ
+            sed -i '/LOCAL_ADDITIONAL_DEPENDENCIES/d' "$CRYPT_MK"
+            
+            # Ganti path include KERNEL_OBJ ke kernel-headers lokal
+            # Kita gunakan path relatif: ../kernel-headers
+            sed -i 's|\$(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr/include|\$(LOCAL_PATH)/../kernel-headers|g' "$CRYPT_MK"
+            
+            echo "Patch selesai."
+        else
+            echo "FATAL: $CRYPT_MK tidak ditemukan!"
+            exit 1
         fi
         
         # E. Bersihkan cache
