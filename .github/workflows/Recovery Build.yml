@@ -102,49 +102,48 @@ jobs:
         sudo ln -sf /usr/bin/python2 /usr/bin/python
       continue-on-error: true
 
-    - name: Install Missing Cryptfs HW (Manual Clone)
+    - name: Build recovery
       run: |
         cd ${{ steps.pwd.outputs.workspace-folder }}/twrp
         
-        echo "=== INSTALLING CRYPTFS HW ==="
+        # 1. Setup Environment
+        export ALLOW_MISSING_DEPENDENCIES=true
+        source build/envsetup.sh
         
-        # Tentukan path target yang sesuai dengan BoardConfig.mk
-        TARGET_PATH="vendor/qcom/opensource/commonsys/cryptfs_hw"
+        # 2. Jalankan Lunch (Ini akan memicu download otomatis/Roomservice)
+        lunch omni_${{ github.event.inputs.DEVICE_NAME }}-eng
         
-        # 1. Buat struktur folder induk (PENTING: karena vendor/qcom belum ada)
-        echo "Membuat folder induk: vendor/qcom/opensource/commonsys"
-        mkdir -p vendor/qcom/opensource/commonsys
+        # =========================================================
+        # INTERVENSI: PERBAIKAN CRYPTFS_HW (LINEAGEOS 15.1)
+        # Dilakukan setelah lunch agar tidak tertimpa oleh Roomservice
+        # =========================================================
+        echo "=== MEMULAI PERBAIKAN CRYPTFS_HW ==="
+        TARGET_CRYPT="vendor/qcom/opensource/commonsys/cryptfs_hw"
         
-        # 2. Hapus target jika kebetulan sudah ada (untuk pembersihan)
-        rm -rf "$TARGET_PATH"
-        
-        # 3. Clone repository LineageOS 15.1 (Android 8.1)
-        echo "Cloning repository ke: $TARGET_PATH"
-        git clone https://github.com/LineageOS/android_vendor_qcom_opensource_cryptfs_hw.git \
-            -b lineage-15.1 \
-            "$TARGET_PATH"
-        
-        # 4. Verifikasi
-        if [ -f "$TARGET_PATH/Android.mk" ]; then
-            echo "SUKSES: Repository berhasil di-clone dan Android.mk ditemukan."
-        else
-            echo "GAGAL: Cloning gagal atau file tidak ditemukan."
-            ls -R vendor/qcom
-            exit 1
+        # Hapus folder yang baru saja didownload oleh lunch (yang bermasalah)
+        if [ -d "$TARGET_CRYPT" ]; then
+            echo "Menghapus repository cryptfs_hw yang salah..."
+            rm -rf "$TARGET_CRYPT"
         fi
         
-        # 5. Hapus cache build untuk memastikan Soong membaca path baru
-        rm -rf out/soong/.bootstrap
+        # Clone ulang versi LineageOS 15.1 yang benar
+        echo "Mengambil cryptfs_hw versi LineageOS 15.1..."
+        git clone https://github.com/LineageOS/android_vendor_qcom_opensource_cryptfs_hw.git \
+            -b lineage-15.1 "$TARGET_CRYPT"
         
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+        # Hapus Android.bp untuk memaksa penggunaan Android.mk (jika ada)
+        if [ -f "$TARGET_CRYPT/Android.bp" ]; then
+            echo "Menghapus Android.bp untuk mencegah error Soong..."
+            rm "$TARGET_CRYPT/Android.bp"
+        fi
+        
+        # Bersihkan cache build (PENTING)
+        rm -rf out/soong/.bootstrap
+        echo "=== PERBAIKAN SELESAI ==="
+        # =========================================================
 
-    - name: Build Recovery
-      run: |
-        cd ${{ steps.pwd.outputs.workspace-folder }}/twrp
-        export ALLOW_MISSING_DEPENDENCIES=true
-        . build/envsetup.sh
-        lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
-        mka ${{ github.event.inputs.BUILD_TARGET }}image
+        # 3. Mulai Build
+        mka ${{ github.event.inputs.BUILD_TARGET }}image -j$(nproc --all)
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
     - name: Check Output
