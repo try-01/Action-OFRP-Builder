@@ -110,37 +110,44 @@ jobs:
         export ALLOW_MISSING_DEPENDENCIES=true
         source build/envsetup.sh
         
-        # 2. Jalankan Lunch (Biarkan Roomservice berjalan)
+        # 2. Jalankan Lunch
         lunch omni_${{ github.event.inputs.DEVICE_NAME }}-eng
         
         # =========================================================
-        # INTERVENSI: PERBAIKAN CRYPTFS_HW & CLEANUP SOONG
+        # INTERVENSI: PERBAIKAN CRYPTFS_HW & LINKING
         # =========================================================
         echo "=== MEMULAI PERBAIKAN CRYPTFS_HW ==="
         TARGET_CRYPT="vendor/qcom/opensource/commonsys/cryptfs_hw"
         PARENT_BP="vendor/qcom/opensource/commonsys/Android.bp"
+        PARENT_MK="vendor/qcom/opensource/commonsys/Android.mk"
         
-        # Hapus folder cryptfs_hw bawaan yang rusak
+        # A. Reset Folder cryptfs_hw
         rm -rf "$TARGET_CRYPT"
-        
-        # Clone ulang versi LineageOS 15.1
         git clone https://github.com/LineageOS/android_vendor_qcom_opensource_cryptfs_hw.git \
             -b lineage-15.1 "$TARGET_CRYPT"
         
-        # Hapus Android.bp di dalam cryptfs_hw (agar pakai Android.mk)
+        # B. Hapus Android.bp di cryptfs_hw (agar pakai Android.mk)
         if [ -f "$TARGET_CRYPT/Android.bp" ]; then
             rm "$TARGET_CRYPT/Android.bp"
         fi
         
-        # --- PERBAIKAN TAMBAHAN (KRUSIAL) ---
-        # Edit file induk commonsys/Android.bp agar TIDAK mencari cryptfs_hw/Android.bp lagi
+        # C. Hapus referensi di Android.bp induk (agar Soong tidak error)
         if [ -f "$PARENT_BP" ]; then
-            echo "Memperbaiki referensi di $PARENT_BP..."
-            # Hapus baris yang mengandung "cryptfs_hw"
             sed -i '/cryptfs_hw/d' "$PARENT_BP"
         fi
         
-        # Bersihkan cache build
+        # D. TAMBAHKAN ke Android.mk induk (agar Make membacanya)
+        # Kita append (tambahkan di baris paling bawah)
+        if [ -f "$PARENT_MK" ]; then
+            echo "" >> "$PARENT_MK"
+            echo "# Added by GitHub Actions for TWRP Encryption" >> "$PARENT_MK"
+            echo "include \$(LOCAL_PATH)/cryptfs_hw/Android.mk" >> "$PARENT_MK"
+            echo "Sukses menambahkan cryptfs_hw ke $PARENT_MK"
+        else
+            echo "WARNING: $PARENT_MK tidak ditemukan!"
+        fi
+        
+        # E. Bersihkan cache
         rm -rf out/soong/.bootstrap
         echo "=== PERBAIKAN SELESAI ==="
         # =========================================================
