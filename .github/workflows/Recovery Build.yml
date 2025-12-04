@@ -102,58 +102,38 @@ jobs:
         sudo ln -sf /usr/bin/python2 /usr/bin/python
       continue-on-error: true
 
-    - name: DEBUG - Locate
-      run: |
-        cd ${{ steps.pwd.outputs.workspace-folder }}/twrp
-        ls -l
-        ls -l vendor/
-        echo "2============================================="
-        echo "Mencari file authorization_set.h di seluruh source..."
-        find vendor -name "cryptfs_hw.c"
-        find vendor -name "cryptfs_hw.h"
-        echo "2============================================="
-        echo "Cek isi folder system/security/keystore:"
-        ls -R vendor || echo "Folder vendor tidak ditemukan"
-        
-        echo "2============================================="
-
-    - name: Replace Cryptfs HW with LineageOS 15.1 Version
+    - name: Install Missing Cryptfs HW (Manual Clone)
       run: |
         cd ${{ steps.pwd.outputs.workspace-folder }}/twrp
         
-        # 1. Tentukan lokasi folder berdasarkan error log sebelumnya
-        # Kita cek apakah ada di 'commonsys' atau langsung di 'opensource'
-        if [ -d "vendor/qcom/opensource/commonsys/cryptfs_hw" ]; then
-            TARGET_DIR="vendor/qcom/opensource/commonsys/cryptfs_hw"
-            PARENT_DIR="vendor/qcom/opensource/commonsys"
-        elif [ -d "vendor/qcom/opensource/cryptfs_hw" ]; then
-            TARGET_DIR="vendor/qcom/opensource/cryptfs_hw"
-            PARENT_DIR="vendor/qcom/opensource"
+        echo "=== INSTALLING CRYPTFS HW ==="
+        
+        # Tentukan path target yang sesuai dengan BoardConfig.mk
+        TARGET_PATH="vendor/qcom/opensource/commonsys/cryptfs_hw"
+        
+        # 1. Buat struktur folder induk (PENTING: karena vendor/qcom belum ada)
+        echo "Membuat folder induk: vendor/qcom/opensource/commonsys"
+        mkdir -p vendor/qcom/opensource/commonsys
+        
+        # 2. Hapus target jika kebetulan sudah ada (untuk pembersihan)
+        rm -rf "$TARGET_PATH"
+        
+        # 3. Clone repository LineageOS 15.1 (Android 8.1)
+        echo "Cloning repository ke: $TARGET_PATH"
+        git clone https://github.com/LineageOS/android_vendor_qcom_opensource_cryptfs_hw.git \
+            -b lineage-15.1 \
+            "$TARGET_PATH"
+        
+        # 4. Verifikasi
+        if [ -f "$TARGET_PATH/Android.mk" ]; then
+            echo "SUKSES: Repository berhasil di-clone dan Android.mk ditemukan."
         else
-            echo "ERROR: Folder cryptfs_hw tidak ditemukan di lokasi standar!"
-            # Debugging: Tampilkan struktur folder vendor untuk melihat di mana dia sembunyi
-            find vendor -maxdepth 5 -type d -name "cryptfs_hw"
+            echo "GAGAL: Cloning gagal atau file tidak ditemukan."
+            ls -R vendor/qcom
             exit 1
         fi
         
-        echo "Lokasi cryptfs_hw ditemukan di: $TARGET_DIR"
-        
-        # 2. Hapus folder bawaan yang bermasalah
-        rm -rf "$TARGET_DIR"
-        
-        # 3. Clone repository LineageOS 15.1 (yang pasti punya Android.mk)
-        # Kita clone langsung ke lokasi target
-        git clone https://github.com/LineageOS/android_vendor_qcom_opensource_cryptfs_hw.git -b lineage-15.1 "$TARGET_DIR"
-        
-        # 4. Verifikasi bahwa Android.mk sekarang sudah ada
-        if [ -f "$TARGET_DIR/Android.mk" ]; then
-            echo "SUKSES: Android.mk ditemukan. Build siap dilanjutkan."
-        else
-            echo "GAGAL: Android.mk tidak ditemukan setelah cloning."
-            exit 1
-        fi
-        
-        # 5. Bersihkan cache build lama
+        # 5. Hapus cache build untuk memastikan Soong membaca path baru
         rm -rf out/soong/.bootstrap
         
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
