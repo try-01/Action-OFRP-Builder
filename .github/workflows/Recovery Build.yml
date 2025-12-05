@@ -114,58 +114,59 @@ jobs:
         lunch omni_${{ github.event.inputs.DEVICE_NAME }}-eng
         
         # =========================================================
-        # INTERVENSI: PERBAIKAN CRYPTFS_HW FULL FIX
+        # INTERVENSI SYSTEM (FIXED)
         # =========================================================
-        echo "=== MEMULAI PERBAIKAN CRYPTFS_HW ==="
+        echo "=== MEMULAI PERBAIKAN SYSTEM ==="
         TARGET_CRYPT="vendor/qcom/opensource/commonsys/cryptfs_hw"
         PARENT_BP="vendor/qcom/opensource/commonsys/Android.bp"
         PARENT_MK="vendor/qcom/opensource/commonsys/Android.mk"
         CRYPT_MK="$TARGET_CRYPT/Android.mk"
+        DT_BOARD_CONFIG="device/realme/RMX1805/BoardConfig.mk"
         
-        # A. Reset Folder cryptfs_hw
+        # --- A-F: Perbaikan Cryptfs HW ---
         rm -rf "$TARGET_CRYPT"
-        git clone https://github.com/LineageOS/android_vendor_qcom_opensource_cryptfs_hw.git \
-            -b lineage-15.1 "$TARGET_CRYPT"
-        
-        # B. Hapus Android.bp di cryptfs_hw (agar pakai Android.mk)
-        if [ -f "$TARGET_CRYPT/Android.bp" ]; then
-            rm "$TARGET_CRYPT/Android.bp"
+        git clone https://github.com/LineageOS/android_vendor_qcom_opensource_cryptfs_hw.git -b lineage-15.1 "$TARGET_CRYPT"
+        [ -f "$TARGET_CRYPT/Android.bp" ] && rm "$TARGET_CRYPT/Android.bp"
+        [ -f "$PARENT_BP" ] && sed -i '/cryptfs_hw/d' "$PARENT_BP"
+        if [ -f "$PARENT_MK" ] && ! grep -q "cryptfs_hw/Android.mk" "$PARENT_MK"; then
+            echo "" >> "$PARENT_MK"; echo "include \$(LOCAL_PATH)/cryptfs_hw/Android.mk" >> "$PARENT_MK"
         fi
-        
-        # C. Hapus referensi di Android.bp induk (agar Soong tidak error)
-        if [ -f "$PARENT_BP" ]; then
-            sed -i '/cryptfs_hw/d' "$PARENT_BP"
-        fi
-        
-        # D. TAMBAHKAN ke Android.mk induk (agar Make membacanya)
-        if [ -f "$PARENT_MK" ]; then
-            # Cek dulu apakah sudah ada include-nya supaya tidak duplikat
-            if ! grep -q "cryptfs_hw/Android.mk" "$PARENT_MK"; then
-                echo "" >> "$PARENT_MK"
-                echo "# Added by GitHub Actions for TWRP Encryption" >> "$PARENT_MK"
-                echo "include \$(LOCAL_PATH)/cryptfs_hw/Android.mk" >> "$PARENT_MK"
-                echo "Sukses menambahkan cryptfs_hw ke $PARENT_MK"
-            fi
-        else
-            echo "WARNING: $PARENT_MK tidak ditemukan!"
+        if [ -f "$CRYPT_MK" ]; then
+            sed -i '/LOCAL_ADDITIONAL_DEPENDENCIES/d' "$CRYPT_MK"
+            sed -i 's|\$(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr/include|\$(LOCAL_PATH)/../kernel-headers|g' "$CRYPT_MK"
         fi
 
-        # F. PATCH Android.mk cryptfs_hw (FIX ERROR KERNEL_OBJ)
-        # Menghapus baris yang mewajibkan KERNEL_OBJ (penyebab Ninja Error)
-        if [ -f "$CRYPT_MK" ]; then
-            echo "Patching $CRYPT_MK untuk menghapus dependency KERNEL_OBJ..."
+        # --- Bagian G: Fix MKBOOTIMG (Hapus Header Version) ---
+        if [ -f "$DT_BOARD_CONFIG" ]; then
+            sed -i '/--header_version/d' "$DT_BOARD_CONFIG"
+            sed -i 's/^BOARD_BOOTIMG_HEADER_VERSION/# BOARD_BOOTIMG_HEADER_VERSION/g' "$DT_BOARD_CONFIG"
+            # Hapus recovery_dtbo karena sudah ditempel manual di kernel
+            sed -i '/BOARD_INCLUDE_RECOVERY_DTBO/d' "$DT_BOARD_CONFIG"
+            sed -i '/BOARD_PREBUILT_DTBOIMAGE/d' "$DT_BOARD_CONFIG"
+        fi
+
+        # --- Bagian I: AVB PATCH (BOOT TANPA DISABLE-VBMETA) ---
+        echo "Menambahkan Flag AVB Disable Verification..."
+        if [ -f "$DT_BOARD_CONFIG" ]; then
+            # 1. Pastikan AVB Enable (Wajib agar footer dibuat)
+            if ! grep -q "BOARD_AVB_ENABLE := true" "$DT_BOARD_CONFIG"; then
+                echo "BOARD_AVB_ENABLE := true" >> "$DT_BOARD_CONFIG"
+            fi
             
-            # Hapus baris LOCAL_ADDITIONAL_DEPENDENCIES yang meminta KERNEL_OBJ
-            sed -i '/LOCAL_ADDITIONAL_DEPENDENCIES/d' "$CRYPT_MK"
+            # 2. Hapus argumen lama jika ada
+            sed -i '/BOARD_AVB_RECOVERY_ADD_HASH_FOOTER_ARGS/d' "$DT_BOARD_CONFIG"
             
-            # Ganti path include KERNEL_OBJ ke kernel-headers lokal
-            # Kita gunakan path relatif: ../kernel-headers
-            sed -i 's|\$(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr/include|\$(LOCAL_PATH)/../kernel-headers|g' "$CRYPT_MK"
+            # 3. Tambahkan argumen baru dengan FLAGS 2 (DISABLE VERIFICATION)
+            # Flag 2 = VBMETA_FLAG_DISABLE_VERIFICATION + VBMETA_FLAG_DISABLE_VERITY
+            echo "BOARD_AVB_RECOVERY_ADD_HASH_FOOTER_ARGS += --flags 2" >> "$DT_BOARD_CONFIG"
             
-            echo "Patch selesai."
-        else
-            echo "FATAL: $CRYPT_MK tidak ditemukan!"
-            exit 1
+            # 4. Tambahkan algo dan key standar jika belum ada
+            if ! grep -q "BOARD_AVB_RECOVERY_ALGORITHM" "$DT_BOARD_CONFIG"; then
+                echo "BOARD_AVB_RECOVERY_ALGORITHM := SHA256_RSA4096" >> "$DT_BOARD_CONFIG"
+                echo "BOARD_AVB_RECOVERY_KEY_PATH := external/avb/test/data/testkey_rsa4096.pem" >> "$DT_BOARD_CONFIG"
+            fi
+            
+            echo "Sukses: AVB Flags 2 telah ditambahkan."
         fi
         
         # E. Bersihkan cache
