@@ -102,7 +102,7 @@ jobs:
         sudo ln -sf /usr/bin/python2 /usr/bin/python
       continue-on-error: true
 
-    - name: Fix Crypto Source Code for Android 9 (Complete Fix v2)
+    - name: Fix Crypto Source Code for Android 9 (Final Fix v3)
       shell: python3 {0}
       env:
         SOURCE_ROOT: ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
@@ -168,53 +168,81 @@ jobs:
             ("using ::keystore::KeyParameter;", "using ::android::hardware::keymaster::V3_0::KeyParameter;"), 
         ])
 
+        # Helper function to inject into Keymaster3.cpp
+        # Ini diperlukan untuk mengkonversi AuthorizationSet ke hidl_vec secara manual
+        km3_helper_code = """
+        using ::android::hardware::hidl_vec;
+        // Helper to convert AuthorizationSet to hidl_vec<KeyParameter>
+        static hidl_vec<KeyParameter> toHidlVec(const ::keymaster::AuthorizationSet& set) {
+            std::vector<KeyParameter> vec;
+            vec.resize(set.size());
+            for (size_t i = 0; i < set.size(); ++i) {
+                memcpy(&vec[i], &set[i], sizeof(KeyParameter));
+            }
+            return hidl_vec<KeyParameter>(vec);
+        }
+        """
+
         # Patch Keymaster3.cpp
         km3_cpp_replacements = [
-            # Fix Headers
+            # Headers
             ("#include <keystore/keymaster_tags.h>", "#include <keymaster/keymaster_tags.h>"),
             ("#include <keystore/authorization_set.h>", "#include <keymaster/authorization_set.h>"),
             
-            # Fix Namespaces
-            ("using namespace ::keystore;", "using namespace ::keymaster;\nusing namespace ::android::hardware::keymaster::V3_0;\nusing namespace ::android::hardware;\nusing ::keystore::blob2hidlVec;"),
+            # Namespaces & Helper Injection
+            ("using namespace ::keystore;", "using namespace ::keymaster;\nusing namespace ::android::hardware::keymaster::V3_0;\nusing namespace ::android::hardware;\nusing ::keystore::blob2hidlVec;\n" + km3_helper_code),
             
-            # Remove conflicting LOG macros
+            # Logging Fixes (Order Matters!)
             ("#define LOG(x) std::cout", ""),
-            ("LOG(ERROR)", "std::cerr"),
+            ("LOG(ERROR)", "std::cerr"), # Simple replace
             
-            # Fix .hidl_data() calls
-            ("inParams.hidl_data()", "hidl_vec<KeyParameter>(inParams.begin(), inParams.end())"),
-            ("keyParams.hidl_data()", "hidl_vec<KeyParameter>(keyParams.begin(), keyParams.end())"),
+            # Fix .hidl_data() -> use helper
+            ("inParams.hidl_data()", "toHidlVec(inParams)"),
+            ("keyParams.hidl_data()", "toHidlVec(keyParams)"),
             
-            # Fix ambiguous outParams assignment
-            ("*outParams = _outParams;", "outParams->Clear();\noutParams->push_back(_outParams.begin(), _outParams.end());"),
+            # Fix ambiguous outParams assignment (loop copy)
+            ("*outParams = _outParams;", 
+             """if (outParams) {
+                outParams->Clear();
+                for (const auto& p : _outParams) {
+                    keymaster_key_param_t param;
+                    memcpy(&param, &p, sizeof(param));
+                    outParams->push_back(param);
+                }
+             }"""),
         ]
         patch_file(km3_cpp, km3_cpp_replacements)
 
         # Patch KeyStorage3.cpp
         ks3_replacements = [
-            # Fix Headers
+            # Headers
             ("#include <keystore/authorization_set.h>", "#include <keymaster/authorization_set.h>"),
             
-            # Fix LOG macros
+            # Logging Fixes (CRITICAL: PLOG before LOG)
             ("#define LOG(x) std::cout", ""),
             ("#define PLOG(x) std::cout", ""),
+            ("PLOG(ERROR)", "std::cerr"), # Must be before LOG(ERROR)
             ("LOG(ERROR)", "std::cerr"),
-            ("PLOG(ERROR)", "std::cerr"),
-            ("LOG(DEBUG)", "// std::cout"), # Comment out debug logs to reduce noise/errors
+            ("LOG(DEBUG)", "// std::cout"), 
             ("LOG(WARNING)", "std::cerr"),
             ("LOG(INFO)", "std::cout"),
+            ("Pstd::cerr", "std::cerr"), # Fix previous double patch artifact if re-running
             
-            # Fix AuthorizationSetBuilder & blob2hidlVec issue
-            # We explicitly convert blob2hidlVec result to keymaster_blob_t using a helper lambda or direct cast if possible, 
-            # but simpler is to just access data() and size()
+            # Fix AuthorizationSetBuilder & blob2hidlVec
             ("paramBuilder.Authorization(TAG_AUTH_TOKEN, blob2hidlVec(auth.token));", 
-             "auto authTokenVec = blob2hidlVec(auth.token);\n    keymaster_blob_t authTokenBlob = { authTokenVec.data(), authTokenVec.size() };\n    paramBuilder.Authorization(TAG_AUTH_TOKEN, authTokenBlob);"),
+             "auto authTokenVec = blob2hidlVec(auth.token);\n    keymaster_blob_t authTokenBlob = { authTokenVec.data(), authTokenVec.size() };\n    paramBuilder.Authorization(::keymaster::TAG_AUTH_TOKEN, authTokenBlob);"),
              
-            # Fix append error
-            ("inParams.append(opParams.begin(), opParams.end());", "inParams.push_back(opParams.begin(), opParams.end());"),
+            # Fix append error (Use loop)
+            ("inParams.append(opParams.begin(), opParams.end());", 
+             "for (const auto& p : opParams) inParams.push_back(p);"),
             
-            # Fix TAG_AUTH_TOKEN ambiguity
-            ("TAG_AUTH_TOKEN", "keymaster::TAG_AUTH_TOKEN"),
+            # Fix builder return
+            ("return paramBuilder;", "return paramBuilder.build();"),
+
+            # Fix ambiguous TAGs and begin()
+            ("TAG_AUTH_TOKEN", "::keymaster::TAG_AUTH_TOKEN"),
+            ("auto opHandle = begin(keymaster, dir, KeyPurpose::DECRYPT, keyParams, opParams, nullptr);",
+             "auto opHandle = begin(keymaster, dir, KeyPurpose::DECRYPT, keyParams, opParams, (::keymaster::AuthorizationSet*)nullptr);"), # Cast nullptr to disambiguate if needed or just rely on type match
         ]
         patch_file(keystorage3_cpp, ks3_replacements)
 
@@ -248,13 +276,10 @@ jobs:
         endif
 
         ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 26; echo $$?),0)
-            # 8.0 or higher
             LOCAL_CFLAGS += -DHAVE_GATEKEEPER1
             LOCAL_SHARED_LIBRARIES += libkeystore_binder libhidlbase libutils libbinder android.hardware.gatekeeper@1.0
             
-            # --- CUSTOM LOGIC FOR ANDROID 9 KM3 ---
             ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 28; echo $$?),0)
-                # Force Keymaster 3 on Pie
                 LOCAL_CFLAGS += -DUSE_KEYSTORAGE_3 -Wno-unused-variable -Wno-sign-compare -Wno-unused-parameter -Wno-comment
                 LOCAL_SRC_FILES += Ext4Crypt.cpp Keymaster3.cpp KeyStorage3.cpp
                 LOCAL_SHARED_LIBRARIES += android.hardware.keymaster@3.0 libkeyutils
@@ -263,7 +288,6 @@ jobs:
                 LOCAL_SRC_FILES += Weaver1.cpp
                 LOCAL_SHARED_LIBRARIES += android.hardware.weaver@1.0
             else
-                # 8.0/8.1 Rules
                 LOCAL_CFLAGS += -DUSE_KEYSTORAGE_3
                 LOCAL_SRC_FILES += Ext4Crypt.cpp Keymaster3.cpp KeyStorage3.cpp
                 LOCAL_SHARED_LIBRARIES += android.hardware.keymaster@3.0
@@ -354,17 +378,14 @@ jobs:
         endif
 
         ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 26; echo $$?),0)
-            # 8.0 or higher
             LOCAL_C_INCLUDES +=  external/boringssl/src/include
             LOCAL_SHARED_LIBRARIES += libselinux libc libc++ libbase libcrypto libcutils libkeymaster_messages libhardware libprotobuf-cpp-lite libe4crypt libkeystore_binder libhidlbase libutils libbinder
             
             ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 28; echo $$?),0)
-                # Force KM3 API
                 LOCAL_CFLAGS += -Wno-unused-variable -Wno-sign-compare -Wno-unused-parameter -Wno-comment
                 LOCAL_SHARED_LIBRARIES += android.hardware.keymaster@3.0 libkeyutils
                 LOCAL_CFLAGS += -DTW_KEYMASTER_MAX_API=3
             else
-                # 8.x rules
                 ifneq ($(wildcard system/core/libkeyutils/Android.bp),)
                     LOCAL_SHARED_LIBRARIES += libkeyutils
                 endif
@@ -372,7 +393,6 @@ jobs:
                 LOCAL_CFLAGS += -DTW_KEYMASTER_MAX_API=3
             endif
         else
-            # <= 7.x rules
             ifneq ($(wildcard hardware/libhardware/include/hardware/keymaster0.h),)
                 LOCAL_C_INCLUDES +=  external/boringssl/src/include
                 LOCAL_CFLAGS += -DTW_KEYMASTER_MAX_API=1
@@ -410,17 +430,14 @@ jobs:
         endif
 
         ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 26; echo $$?),0)
-            # 8.0 or higher
             LOCAL_C_INCLUDES +=  external/boringssl/src/include
             LOCAL_SHARED_LIBRARIES += libselinux libc libc++ libbase libcrypto libcutils libkeymaster_messages libhardware libprotobuf-cpp-lite libe4crypt libkeystore_binder libhidlbase libutils libbinder
             
             ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 28; echo $$?),0)
-                # Force KM3 API
                 LOCAL_CFLAGS += -Wno-unused-variable -Wno-sign-compare -Wno-unused-parameter -Wno-comment
                 LOCAL_SHARED_LIBRARIES += android.hardware.keymaster@3.0 libkeyutils
                 LOCAL_CFLAGS += -DTW_KEYMASTER_MAX_API=3
             else
-                # 8.x rules
                 ifneq ($(wildcard system/core/libkeyutils/Android.bp),)
                     LOCAL_SHARED_LIBRARIES += libkeyutils
                 endif
@@ -428,7 +445,6 @@ jobs:
                 LOCAL_CFLAGS += -DTW_KEYMASTER_MAX_API=3
             endif
         else
-            # <= 7.x rules
             ifneq ($(wildcard hardware/libhardware/include/hardware/keymaster0.h),)
                 LOCAL_C_INCLUDES +=  external/boringssl/src/include
                 LOCAL_CFLAGS += -DTW_KEYMASTER_MAX_API=1
@@ -460,33 +476,6 @@ jobs:
         # Patch
         sed -i '/^bool verify_package_compatibility(ZipWrap \*zw) {/,/^}/c bool verify_package_compatibility(ZipWrap *zw) { // NOLINT\n   (void)zw; // Mark parameter as intentionally unused\n   printf("OrangeFox: Forcefully bypassing Treble compatibility check via patch.\\n");\n   return true;\n}' "./bootable/recovery/installcommand.cpp"
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
-
-    - name: DEBUG - Locate
-      run: |
-        cd ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
-        echo "============================================="
-        echo "Mencari file authorization_set.h di seluruh source..."
-        find system -name "authorization_set.h"
-        echo "============================================="
-        echo "KM authorization_set.h DEBUGGG"
-        cat system/keymaster/include/keymaster/authorization_set.h
-        echo "KS authorization_set.h DEBUGGG"
-        cat system/keymaster/ng/include/authorization_set.h
-        echo "KS keystore_hidl_support.h DEBUGGG"
-        cat system/security/keystore/include/keystore/keystore_hidl_support.h
-        echo "KMNG keystore_hidl_support.h DEBUGGG"
-        cat system/keymaster/ng/include/keystore_hidl_support.h
-        echo "KM keymaster_tags DEBUGGG"
-        cat system/keymaster/include/keymaster/keymaster_tags.h
-        echo "KMNG keymaster_tags DEBUGGG"
-        cat system/keymaster/ng/include/keymaster_tags.h
-        echo "logging.h DEBUGGG"
-        cat system/core/base/include/android-base/logging.h
-        echo "HidlSupport.h DEBUGGG"
-        cat system/libhidl/base/include/hidl/HidlSupport.h
-        echo "keymaster_types.h DEBUGGG"
-        cat system/security/keystore/include/keystore/keymaster_types.h
-        echo "============================================="
 
     - name: Build recovery
       run: |
