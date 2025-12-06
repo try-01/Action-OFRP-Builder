@@ -102,28 +102,22 @@ jobs:
         sudo ln -sf /usr/bin/python2 /usr/bin/python
       continue-on-error: true
 
-    - name: Build recovery
+    - name: Build recovery with Modern Tools
       run: |
         cd ${{ steps.pwd.outputs.workspace-folder }}/twrp
         
-        # 1. Setup Environment
         export ALLOW_MISSING_DEPENDENCIES=true
         source build/envsetup.sh
-        
-        # 2. Jalankan Lunch
         lunch omni_${{ github.event.inputs.DEVICE_NAME }}-eng
         
         # =========================================================
-        # INTERVENSI SYSTEM (FIXED)
+        # 1. PERBAIKAN CRYPTFS HW (LineageOS 15.1 Fix)
         # =========================================================
-        echo "=== MEMULAI PERBAIKAN SYSTEM ==="
         TARGET_CRYPT="vendor/qcom/opensource/commonsys/cryptfs_hw"
         PARENT_BP="vendor/qcom/opensource/commonsys/Android.bp"
         PARENT_MK="vendor/qcom/opensource/commonsys/Android.mk"
         CRYPT_MK="$TARGET_CRYPT/Android.mk"
-        DT_BOARD_CONFIG="device/realme/RMX1805/BoardConfig.mk"
         
-        # --- A-F: Perbaikan Cryptfs HW ---
         rm -rf "$TARGET_CRYPT"
         git clone https://github.com/LineageOS/android_vendor_qcom_opensource_cryptfs_hw.git -b lineage-15.1 "$TARGET_CRYPT"
         [ -f "$TARGET_CRYPT/Android.bp" ] && rm "$TARGET_CRYPT/Android.bp"
@@ -136,46 +130,56 @@ jobs:
             sed -i 's|\$(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr/include|\$(LOCAL_PATH)/../kernel-headers|g' "$CRYPT_MK"
         fi
 
-        # --- Bagian G: Fix MKBOOTIMG (Hapus Header Version) ---
-        if [ -f "$DT_BOARD_CONFIG" ]; then
-            sed -i '/--header_version/d' "$DT_BOARD_CONFIG"
-            sed -i 's/^BOARD_BOOTIMG_HEADER_VERSION/# BOARD_BOOTIMG_HEADER_VERSION/g' "$DT_BOARD_CONFIG"
-            # Hapus recovery_dtbo karena sudah ditempel manual di kernel
-            sed -i '/BOARD_INCLUDE_RECOVERY_DTBO/d' "$DT_BOARD_CONFIG"
-            sed -i '/BOARD_PREBUILT_DTBOIMAGE/d' "$DT_BOARD_CONFIG"
-        fi
-
-        # --- Bagian I: AVB PATCH (BOOT TANPA DISABLE-VBMETA) ---
-        echo "Menambahkan Flag AVB Disable Verification..."
-        if [ -f "$DT_BOARD_CONFIG" ]; then
-            # 1. Pastikan AVB Enable (Wajib agar footer dibuat)
-            if ! grep -q "BOARD_AVB_ENABLE := true" "$DT_BOARD_CONFIG"; then
-                echo "BOARD_AVB_ENABLE := true" >> "$DT_BOARD_CONFIG"
-            fi
-            
-            # 2. Hapus argumen lama jika ada
-            sed -i '/BOARD_AVB_RECOVERY_ADD_HASH_FOOTER_ARGS/d' "$DT_BOARD_CONFIG"
-            
-            # 3. Tambahkan argumen baru dengan FLAGS 2 (DISABLE VERIFICATION)
-            # Flag 2 = VBMETA_FLAG_DISABLE_VERIFICATION + VBMETA_FLAG_DISABLE_VERITY
-            echo "BOARD_AVB_RECOVERY_ADD_HASH_FOOTER_ARGS += --flags 2" >> "$DT_BOARD_CONFIG"
-            
-            # 4. Tambahkan algo dan key standar jika belum ada
-            if ! grep -q "BOARD_AVB_RECOVERY_ALGORITHM" "$DT_BOARD_CONFIG"; then
-                echo "BOARD_AVB_RECOVERY_ALGORITHM := SHA256_RSA4096" >> "$DT_BOARD_CONFIG"
-                echo "BOARD_AVB_RECOVERY_KEY_PATH := external/avb/test/data/testkey_rsa4096.pem" >> "$DT_BOARD_CONFIG"
-            fi
-            
-            echo "Sukses: AVB Flags 2 telah ditambahkan."
-        fi
-        
-        # E. Bersihkan cache
-        rm -rf out/soong/.bootstrap
-        echo "=== PERBAIKAN SELESAI ==="
         # =========================================================
+        # 2. UPGRADE MKBOOTIMG (Agar support Header V1 & DTBO)
+        # =========================================================
+        echo "Mengganti mkbootimg kuno dengan versi Python modern..."
+        MKBOOTIMG_PATH="out/host/linux-x86/bin/mkbootimg"
+        
+        # Download mkbootimg.py dari Google source
+        curl -o "$MKBOOTIMG_PATH" https://raw.githubusercontent.com/osm0sis/mkbootimg/master/mkbootimg.py
+        chmod +x "$MKBOOTIMG_PATH"
+        
+        # Pastikan python terpanggil dengan benar (karena scriptnya python3)
+        sed -i '1s|^.*$|#!/usr/bin/env python3|' "$MKBOOTIMG_PATH"
+        
+        echo "MKBOOTIMG berhasil diupdate. Versi:"
+        "$MKBOOTIMG_PATH" --version || echo "Versi script OK"
 
-        # 3. Mulai Build
+        # =========================================================
+        # 3. BUILD
+        # =========================================================
+        rm -rf out/soong/.bootstrap
         mka ${{ github.event.inputs.BUILD_TARGET }}image -j$(nproc --all)
+
+        # =========================================================
+        # 4. MANUAL AVB SIGNING (Agar boot tanpa stuck)
+        # =========================================================
+        REC_PATH="out/target/product/${{ github.event.inputs.DEVICE_NAME }}/recovery.img"
+        
+        echo "Memeriksa hasil build..."
+        if [ -f "$REC_PATH" ]; then
+            echo "Signing recovery.img dengan AVB Flags 2 (Disable Verification)..."
+            
+            # Download avbtool standalone
+            curl -o avbtool https://android.googlesource.com/platform/external/avb/+/refs/heads/master/avbtool.py?format=TEXT
+            base64 -d avbtool > avbtool.py
+            chmod +x avbtool.py
+            
+            # Sign Image (Footer ditambahkan/ditimpa)
+            # Menggunakan algorithm SHA256_RSA4096 (Standar)
+            python3 avbtool.py add_hash_footer \
+                --image "$REC_PATH" \
+                --partition_name recovery \
+                --partition_size 67108864 \
+                --flags 2
+                
+            echo "AVB Signing Selesai."
+        else
+            echo "Build Gagal: recovery.img tidak ditemukan."
+            exit 1
+        fi
+
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
     - name: Check Output
