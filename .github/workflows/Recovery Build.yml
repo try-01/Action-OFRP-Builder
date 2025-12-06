@@ -102,7 +102,7 @@ jobs:
         sudo ln -sf /usr/bin/python2 /usr/bin/python
       continue-on-error: true
 
-    - name: Fix Crypto Source Code for Android 9 (Complete)
+    - name: Fix Crypto Source Code for Android 9 (Complete Fix v2)
       shell: python3 {0}
       env:
         SOURCE_ROOT: ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
@@ -158,13 +158,7 @@ jobs:
         # 1. PATCH SOURCE CODE
         # ==========================================
         
-        # Patch KeyStorage3.cpp (Fix include)
-        patch_file(keystorage3_cpp, [
-            ("#include <keystore/authorization_set.h>", "#include <keymaster/authorization_set.h>"),
-        ])
-
-        # Patch Keymaster3.h (Fix definitions & Namespaces)
-        # Kita arahkan ErrorCode dan KeyPurpose langsung ke HAL V3.0
+        # Patch Keymaster3.h
         patch_file(km3_h, [
             ("#include <keystore/authorization_set.h>", "#include <keymaster/authorization_set.h>"),
             ("#include <keystore/keymaster_tags.h>", "#include <keymaster/keymaster_tags.h>"),
@@ -174,19 +168,55 @@ jobs:
             ("using ::keystore::KeyParameter;", "using ::android::hardware::keymaster::V3_0::KeyParameter;"), 
         ])
 
-        # Patch Keymaster3.cpp (Fix Logic & Ambiguity)
-        # 1. Ubah Namespace: Buang keystore, pakai keymaster dan V3_0
-        # 2. Fix .hidl_data() error: Ganti dengan konstruktor hidl_vec
-        # 3. Fix LOG redefinition: Hapus definisi LOG macro di file ini
-        patch_file(km3_cpp, [
+        # Patch Keymaster3.cpp
+        km3_cpp_replacements = [
+            # Fix Headers
             ("#include <keystore/keymaster_tags.h>", "#include <keymaster/keymaster_tags.h>"),
             ("#include <keystore/authorization_set.h>", "#include <keymaster/authorization_set.h>"),
-            ("using namespace ::keystore;", "using namespace ::keymaster;\nusing namespace ::android::hardware::keymaster::V3_0;"),
-            ("#define LOG(x) std::cout", ""), # Hapus definisi LOG yang bentrok
-            # Fix hidl_data() calls by converting AuthorizationSet to hidl_vec manually
+            
+            # Fix Namespaces
+            ("using namespace ::keystore;", "using namespace ::keymaster;\nusing namespace ::android::hardware::keymaster::V3_0;\nusing namespace ::android::hardware;\nusing ::keystore::blob2hidlVec;"),
+            
+            # Remove conflicting LOG macros
+            ("#define LOG(x) std::cout", ""),
+            ("LOG(ERROR)", "std::cerr"),
+            
+            # Fix .hidl_data() calls
             ("inParams.hidl_data()", "hidl_vec<KeyParameter>(inParams.begin(), inParams.end())"),
             ("keyParams.hidl_data()", "hidl_vec<KeyParameter>(keyParams.begin(), keyParams.end())"),
-        ])
+            
+            # Fix ambiguous outParams assignment
+            ("*outParams = _outParams;", "outParams->Clear();\noutParams->push_back(_outParams.begin(), _outParams.end());"),
+        ]
+        patch_file(km3_cpp, km3_cpp_replacements)
+
+        # Patch KeyStorage3.cpp
+        ks3_replacements = [
+            # Fix Headers
+            ("#include <keystore/authorization_set.h>", "#include <keymaster/authorization_set.h>"),
+            
+            # Fix LOG macros
+            ("#define LOG(x) std::cout", ""),
+            ("#define PLOG(x) std::cout", ""),
+            ("LOG(ERROR)", "std::cerr"),
+            ("PLOG(ERROR)", "std::cerr"),
+            ("LOG(DEBUG)", "// std::cout"), # Comment out debug logs to reduce noise/errors
+            ("LOG(WARNING)", "std::cerr"),
+            ("LOG(INFO)", "std::cout"),
+            
+            # Fix AuthorizationSetBuilder & blob2hidlVec issue
+            # We explicitly convert blob2hidlVec result to keymaster_blob_t using a helper lambda or direct cast if possible, 
+            # but simpler is to just access data() and size()
+            ("paramBuilder.Authorization(TAG_AUTH_TOKEN, blob2hidlVec(auth.token));", 
+             "auto authTokenVec = blob2hidlVec(auth.token);\n    keymaster_blob_t authTokenBlob = { authTokenVec.data(), authTokenVec.size() };\n    paramBuilder.Authorization(TAG_AUTH_TOKEN, authTokenBlob);"),
+             
+            # Fix append error
+            ("inParams.append(opParams.begin(), opParams.end());", "inParams.push_back(opParams.begin(), opParams.end());"),
+            
+            # Fix TAG_AUTH_TOKEN ambiguity
+            ("TAG_AUTH_TOKEN", "keymaster::TAG_AUTH_TOKEN"),
+        ]
+        patch_file(keystorage3_cpp, ks3_replacements)
 
         # Patch Decrypt.cpp
         patch_file(decrypt_cpp, [
@@ -199,14 +229,12 @@ jobs:
         # ==========================================
         
         # ext4crypt/Android.mk
-        # Added -Wno-unused-function to fix Ext4Crypt.cpp error
         ext4_content = r"""LOCAL_PATH := $(call my-dir)
         ifeq ($(TW_INCLUDE_CRYPTO), true)
         include $(CLEAR_VARS)
 
         LOCAL_MODULE := libe4crypt
         LOCAL_MODULE_TAGS := eng optional
-        # Added -Wno-unused-function to fix escape_null error
         LOCAL_CFLAGS := -Wno-unused-function
         LOCAL_SRC_FILES := Decrypt.cpp ScryptParameters.cpp Utils.cpp HashPassword.cpp ext4_crypt.cpp
         LOCAL_SHARED_LIBRARIES := libselinux libc libc++ libext4_utils libbase libcrypto libcutils libkeymaster_messages libhardware libprotobuf-cpp-lite
@@ -440,17 +468,24 @@ jobs:
         echo "Mencari file authorization_set.h di seluruh source..."
         find system -name "authorization_set.h"
         echo "============================================="
-        echo "Cek isi folder system/security/keystore:"
+        echo "KM authorization_set.h DEBUGGG"
         cat system/keymaster/include/keymaster/authorization_set.h
+        echo "KS authorization_set.h DEBUGGG"
         cat system/keymaster/ng/include/authorization_set.h
+        echo "KS keystore_hidl_support.h DEBUGGG"
         cat system/security/keystore/include/keystore/keystore_hidl_support.h
+        echo "KMNG keystore_hidl_support.h DEBUGGG"
         cat system/keymaster/ng/include/keystore_hidl_support.h
+        echo "KM keymaster_tags DEBUGGG"
         cat system/keymaster/include/keymaster/keymaster_tags.h
+        echo "KMNG keymaster_tags DEBUGGG"
         cat system/keymaster/ng/include/keymaster_tags.h
+        echo "logging.h DEBUGGG"
         cat system/core/base/include/android-base/logging.h
+        echo "HidlSupport.h DEBUGGG"
         cat system/libhidl/base/include/hidl/HidlSupport.h
+        echo "keymaster_types.h DEBUGGG"
         cat system/security/keystore/include/keystore/keymaster_types.h
-        
         echo "============================================="
 
     - name: Build recovery
