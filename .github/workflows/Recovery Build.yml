@@ -102,7 +102,7 @@ jobs:
         sudo ln -sf /usr/bin/python2 /usr/bin/python
       continue-on-error: true
 
-    - name: Patch Android.mk for Keymaster 3 on Android 9
+    - name: Fix Crypto Source Code for Android 9 (Final)
       shell: python3 {0}
       env:
         SOURCE_ROOT: ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
@@ -110,31 +110,90 @@ jobs:
         import os
         import sys
 
-        # 1. AMBIL LOKASI SOURCE CODE DARI ENV
         source_root = os.environ.get('SOURCE_ROOT')
         if not source_root:
             print("Error: SOURCE_ROOT variable is empty")
             sys.exit(1)
 
         print(f"Changing working directory to: {source_root}")
-        
-        # 2. PINDAH DIREKTORI KE FOLDER SOURCE CODE
         try:
             os.chdir(source_root)
         except FileNotFoundError:
             print(f"Error: Directory {source_root} not found!")
             sys.exit(1)
 
-        # 3. SET PATH TARGET
-        base_path = "bootable/recovery/crypto"
-        ext4_mk_path = os.path.join(base_path, "ext4crypt/Android.mk")
-        fde_mk_path = os.path.join(base_path, "fde/Android.mk")
+        # ==========================================
+        # PATH DEFINITIONS
+        # ==========================================
+        crypto_path = "bootable/recovery/crypto"
+        ext4_mk = os.path.join(crypto_path, "ext4crypt/Android.mk")
+        fde_mk = os.path.join(crypto_path, "fde/Android.mk")
+        
+        km3_h = os.path.join(crypto_path, "ext4crypt/Keymaster3.h")
+        km3_cpp = os.path.join(crypto_path, "ext4crypt/Keymaster3.cpp")
+        decrypt_cpp = os.path.join(crypto_path, "ext4crypt/Decrypt.cpp")
 
-        print(f"Patching files in: {os.path.abspath(base_path)}")
+        def patch_file(filepath, replacements):
+            if not os.path.exists(filepath):
+                print(f"Warning: File {filepath} not found, skipping patch.")
+                return
+            
+            print(f"Patching {filepath}...")
+            with open(filepath, 'r') as f:
+                content = f.read()
+            
+            original_content = content
+            for search, replace in replacements:
+                content = content.replace(search, replace)
+            
+            if content != original_content:
+                with open(filepath, 'w') as f:
+                    f.write(content)
+                print(f"Success: Patched {filepath}")
+            else:
+                print(f"Info: No changes made to {filepath} (already patched?)")
 
         # ==========================================
-        # KONTEN BARU: ext4crypt/Android.mk
+        # 1. PATCH SOURCE CODE
         # ==========================================
+        
+        # Patch Keymaster3.h
+        # authorization_set dan keymaster_tags PINDAH ke folder 'keymaster/'
+        # Namespace juga berubah menjadi 'keymaster'
+        patch_file(km3_h, [
+            ("#include <keystore/authorization_set.h>", "#include <keymaster/authorization_set.h>"),
+            ("#include <keystore/keymaster_tags.h>", "#include <keymaster/keymaster_tags.h>"),
+            ("using ::keystore::AuthorizationSet;", "using ::keymaster::AuthorizationSet;"),
+            ("using ::keystore::ErrorCode;", "using ::keymaster::ErrorCode;"),
+            ("using ::keystore::KeyPurpose;", "using ::keymaster::KeyPurpose;"),
+            ("using ::keystore::KeyParameter;", "using ::keymaster::KeyParameter;"), 
+        ])
+
+        # Patch Keymaster3.cpp
+        # 1. Header authorization_set dan keymaster_tags diubah ke 'keymaster/'
+        # 2. Header keystore_hidl_support.h DIBIARKAN di 'keystore/' (sesuai log locate Anda)
+        # 3. Namespace ditambah: gunakan KEDUANYA (keystore dan keymaster)
+        patch_file(km3_cpp, [
+            ("#include <keystore/keymaster_tags.h>", "#include <keymaster/keymaster_tags.h>"),
+            ("#include <keystore/authorization_set.h>", "#include <keymaster/authorization_set.h>"),
+            ("using namespace ::keystore;", "using namespace ::keystore; using namespace ::keymaster;"),
+        ])
+
+        # Patch Decrypt.cpp
+        # Gunakan header system baru (USE_KEYSTORAGE_4) tapi tetap gunakan class Ext4Crypt lama
+        patch_file(decrypt_cpp, [
+            ("#ifdef USE_KEYSTORAGE_4", "#if 1"), 
+            ('#include "Ext4CryptPie.h"', '#include "Ext4Crypt.h"'),
+        ])
+
+        # ==========================================
+        # 2. WRITE ANDROID.MK FILES
+        # ==========================================
+        
+        # ext4crypt/Android.mk
+        # Include paths:
+        # - system/security/keystore/include (untuk keystore/keystore_hidl_support.h)
+        # - system/keymaster/include (untuk keymaster/authorization_set.h)
         ext4_content = r"""LOCAL_PATH := $(call my-dir)
         ifeq ($(TW_INCLUDE_CRYPTO), true)
         include $(CLEAR_VARS)
@@ -146,7 +205,7 @@ jobs:
         LOCAL_SHARED_LIBRARIES := libselinux libc libc++ libext4_utils libbase libcrypto libcutils libkeymaster_messages libhardware libprotobuf-cpp-lite
         LOCAL_STATIC_LIBRARIES := libscrypt_static
         
-        # INCLUDE PATH LENGKAP EXT4CRYPT
+        # INCLUDES: system/security/keystore/include AND system/keymaster/include
         LOCAL_C_INCLUDES := system/extras/ext4_utils system/extras/ext4_utils/include/ext4_utils external/scrypt/lib/crypto system/security/keystore system/security/keystore/include hardware/libhardware/include/hardware system/security/softkeymaster/include/keymaster system/keymaster/include
 
         ifneq ($(wildcard hardware/libhardware/include/hardware/keymaster0.h),)
@@ -155,37 +214,22 @@ jobs:
         endif
 
         ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 26; echo $$?),0)
-            # 8.0 or higher general libs
+            # 8.0 or higher
             LOCAL_CFLAGS += -DHAVE_GATEKEEPER1
             LOCAL_SHARED_LIBRARIES += libkeystore_binder libhidlbase libutils libbinder android.hardware.gatekeeper@1.0
             
-            # --- PATCH START: CUSTOM LOGIC FOR ANDROID 9 KM3 ---
+            # --- CUSTOM LOGIC FOR ANDROID 9 KM3 ---
             ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 28; echo $$?),0)
-                # 9.0 (Pie) Rules
-                ifeq ($(TW_CRYPTO_USE_KEYMASTER_3), true)
-                    # Force Keymaster 3 on Pie
-                    LOCAL_CFLAGS += -DUSE_KEYSTORAGE_3 -Wno-unused-variable -Wno-sign-compare -Wno-unused-parameter -Wno-comment
-                    LOCAL_SRC_FILES += Ext4Crypt.cpp Keymaster3.cpp KeyStorage3.cpp
-                    LOCAL_SHARED_LIBRARIES += android.hardware.keymaster@3.0 libkeyutils
-                    LOCAL_CFLAGS += -DHAVE_LIBKEYUTILS
-                    # Weaver support usually present in Pie
-                    LOCAL_CFLAGS += -DHAVE_SYNTH_PWD_SUPPORT
-                    LOCAL_SRC_FILES += Weaver1.cpp
-                    LOCAL_SHARED_LIBRARIES += android.hardware.weaver@1.0
-                else
-                    # Standard Pie (Keymaster 4)
-                    LOCAL_CFLAGS += -DUSE_KEYSTORAGE_4 -Wno-unused-variable -Wno-sign-compare -Wno-unused-parameter -Wno-comment
-                    LOCAL_SRC_FILES += Ext4CryptPie.cpp Keymaster4.cpp KeyStorage4.cpp KeyUtil.cpp MetadataCrypt.cpp KeyBuffer.cpp
-                    LOCAL_SHARED_LIBRARIES += android.hardware.keymaster@4.0 libkeymaster4support
-                    LOCAL_SHARED_LIBRARIES += libkeystore_parcelables libkeystore_aidl
-                    LOCAL_CFLAGS += -DHAVE_SYNTH_PWD_SUPPORT
-                    LOCAL_SRC_FILES += Weaver1.cpp
-                    LOCAL_SHARED_LIBRARIES += android.hardware.weaver@1.0
-                    LOCAL_CFLAGS += -DHAVE_LIBKEYUTILS
-                    LOCAL_SHARED_LIBRARIES += libkeyutils
-                endif
+                # Force Keymaster 3 on Pie
+                LOCAL_CFLAGS += -DUSE_KEYSTORAGE_3 -Wno-unused-variable -Wno-sign-compare -Wno-unused-parameter -Wno-comment
+                LOCAL_SRC_FILES += Ext4Crypt.cpp Keymaster3.cpp KeyStorage3.cpp
+                LOCAL_SHARED_LIBRARIES += android.hardware.keymaster@3.0 libkeyutils
+                LOCAL_CFLAGS += -DHAVE_LIBKEYUTILS
+                LOCAL_CFLAGS += -DHAVE_SYNTH_PWD_SUPPORT
+                LOCAL_SRC_FILES += Weaver1.cpp
+                LOCAL_SHARED_LIBRARIES += android.hardware.weaver@1.0
             else
-                # 8.0/8.1 Rules (Oreo)
+                # 8.0/8.1 Rules
                 LOCAL_CFLAGS += -DUSE_KEYSTORAGE_3
                 LOCAL_SRC_FILES += Ext4Crypt.cpp Keymaster3.cpp KeyStorage3.cpp
                 LOCAL_SHARED_LIBRARIES += android.hardware.keymaster@3.0
@@ -199,7 +243,6 @@ jobs:
                     LOCAL_SHARED_LIBRARIES += libkeyutils
                 endif
             endif
-            # --- PATCH END ---
 
             ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 28; echo $$?),0)
                 LOCAL_REQUIRED_MODULES := keystore_auth
@@ -207,7 +250,6 @@ jobs:
                 LOCAL_ADDITIONAL_DEPENDENCIES := keystore_auth
             endif
         else
-            # 7.x rules
             LOCAL_SRC_FILES += Ext4Crypt.cpp Keymaster.cpp KeyStorage.cpp
         endif
         ifeq ($(shell test $(PLATFORM_SDK_VERSION) -lt 28; echo $$?),0)
@@ -250,9 +292,11 @@ jobs:
         include $(BUILD_EXECUTABLE)
         endif"""
 
-        # ==========================================
-        # KONTEN BARU: fde/Android.mk
-        # ==========================================
+        with open(ext4_mk, "w") as f:
+            f.write(ext4_content)
+        print(f"Updated {ext4_mk}")
+
+        # fde/Android.mk
         fde_content = r"""LOCAL_PATH := $(call my-dir)
         ifeq ($(TW_INCLUDE_CRYPTO), true)
         include $(CLEAR_VARS)
@@ -263,7 +307,7 @@ jobs:
         LOCAL_SHARED_LIBRARIES := libcrypto libhardware libcutils libstdc++
         LOCAL_STATIC_LIBRARIES := libscrypttwrp_static
         
-        # FIX: Added expanded include paths (Keystore, Hardware, Keymaster)
+        # INCLUDES: Added system/security/keystore/include AND system/keymaster/include
         LOCAL_C_INCLUDES := external/openssl/include $(commands_recovery_local_path)/crypto/scrypt/lib/crypto system/security/keystore/include hardware/libhardware/include/hardware system/keymaster/include
         
         ifeq ($(shell test $(PLATFORM_SDK_VERSION) -lt 23; echo $$?),0)
@@ -282,18 +326,10 @@ jobs:
             LOCAL_SHARED_LIBRARIES += libselinux libc libc++ libbase libcrypto libcutils libkeymaster_messages libhardware libprotobuf-cpp-lite libe4crypt libkeystore_binder libhidlbase libutils libbinder
             
             ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 28; echo $$?),0)
-                # 9.0 rules
-                LOCAL_CFLAGS += -Wno-sign-compare -Wno-unused-parameter -Wno-comment -Wno-unused-variable
-                
-                # --- PATCH START ---
-                ifeq ($(TW_CRYPTO_USE_KEYMASTER_3), true)
-                    LOCAL_SHARED_LIBRARIES += android.hardware.keymaster@3.0 libkeyutils
-                    LOCAL_CFLAGS += -DTW_KEYMASTER_MAX_API=3
-                else
-                    LOCAL_SHARED_LIBRARIES += android.hardware.keymaster@4.0 libkeymaster4support libkeyutils
-                    LOCAL_CFLAGS += -DTW_KEYMASTER_MAX_API=4
-                endif
-                # --- PATCH END ---
+                # Force KM3 API
+                LOCAL_CFLAGS += -Wno-unused-variable -Wno-sign-compare -Wno-unused-parameter -Wno-comment
+                LOCAL_SHARED_LIBRARIES += android.hardware.keymaster@3.0 libkeyutils
+                LOCAL_CFLAGS += -DTW_KEYMASTER_MAX_API=3
             else
                 # 8.x rules
                 ifneq ($(wildcard system/core/libkeyutils/Android.bp),)
@@ -332,7 +368,7 @@ jobs:
         LOCAL_SHARED_LIBRARIES := libcrypto libhardware libcutils libc libstdc++
         LOCAL_STATIC_LIBRARIES := libscrypttwrp_static
         
-        # FIX: Added expanded include paths HERE AS WELL
+        # INCLUDES: Added system/security/keystore/include AND system/keymaster/include
         LOCAL_C_INCLUDES := external/openssl/include $(commands_recovery_local_path)/crypto/scrypt/lib/crypto system/security/keystore/include hardware/libhardware/include/hardware system/keymaster/include
         
         ifeq ($(shell test $(PLATFORM_SDK_VERSION) -lt 23; echo $$?),0)
@@ -347,19 +383,10 @@ jobs:
             LOCAL_SHARED_LIBRARIES += libselinux libc libc++ libbase libcrypto libcutils libkeymaster_messages libhardware libprotobuf-cpp-lite libe4crypt libkeystore_binder libhidlbase libutils libbinder
             
             ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 28; echo $$?),0)
-                # 9.0 rules
+                # Force KM3 API
                 LOCAL_CFLAGS += -Wno-unused-variable -Wno-sign-compare -Wno-unused-parameter -Wno-comment
-                
-                # --- PATCH START ---
-                ifeq ($(TW_CRYPTO_USE_KEYMASTER_3), true)
-                    LOCAL_SHARED_LIBRARIES += android.hardware.keymaster@3.0 libkeyutils
-                    LOCAL_CFLAGS += -DTW_KEYMASTER_MAX_API=3
-                else
-                    LOCAL_SHARED_LIBRARIES += android.hardware.keymaster@4.0 libkeymaster4support libkeyutils
-                    LOCAL_CFLAGS += -DTW_KEYMASTER_MAX_API=4
-                endif
-                # --- PATCH END ---
-
+                LOCAL_SHARED_LIBRARIES += android.hardware.keymaster@3.0 libkeyutils
+                LOCAL_CFLAGS += -DTW_KEYMASTER_MAX_API=3
             else
                 # 8.x rules
                 ifneq ($(wildcard system/core/libkeyutils/Android.bp),)
@@ -391,27 +418,9 @@ jobs:
         include $(BUILD_EXECUTABLE)
         endif"""
 
-        # ==========================================
-        # EKSEKUSI PENULISAN FILE
-        # ==========================================
-        
-        # Tulis ext4crypt/Android.mk
-        try:
-            with open(ext4_mk_path, "w") as f:
-                f.write(ext4_content)
-            print(f"Success: Updated {ext4_mk_path}")
-        except Exception as e:
-            print(f"Error updating {ext4_mk_path}: {e}")
-            sys.exit(1)
-
-        # Tulis fde/Android.mk
-        try:
-            with open(fde_mk_path, "w") as f:
-                f.write(fde_content)
-            print(f"Success: Updated {fde_mk_path}")
-        except Exception as e:
-            print(f"Error updating {fde_mk_path}: {e}")
-            sys.exit(1)
+        with open(fde_mk, "w") as f:
+            f.write(fde_content)
+        print(f"Updated {fde_mk}")
 
     - name: Patch Treble Stock Rom Ozip (Sed)
       run: |
