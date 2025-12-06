@@ -112,7 +112,7 @@ jobs:
         # Sesuaikan base_path jika struktur folder Anda berbeda
         # Biasanya: work_dir/bootable/recovery/crypto
         # ==========================================
-        base_path = "fox_9.0/bootable/recovery/crypto"
+        base_path = "bootable/recovery/crypto"
         ext4_mk_path = os.path.join(base_path, "ext4crypt/Android.mk")
         fde_mk_path = os.path.join(base_path, "fde/Android.mk")
 
