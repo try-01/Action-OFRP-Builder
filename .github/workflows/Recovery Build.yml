@@ -131,17 +131,27 @@ jobs:
         fi
 
         # =========================================================
-        # 2. UPGRADE MKBOOTIMG (Agar support Header V1 & DTBO)
+        # 2. UPGRADE MKBOOTIMG (FIX "No such file or directory")
         # =========================================================
+        echo "Memancing sistem build untuk membuat folder bin..."
+        # Kita build dulu tool mkbootimg bawaan agar foldernya terbentuk
+        mka mkbootimg
+        
         echo "Mengganti mkbootimg kuno dengan versi Python modern..."
         MKBOOTIMG_PATH="out/host/linux-x86/bin/mkbootimg"
         
-        # Download mkbootimg.py dari Google source
+        # Pastikan foldernya benar-benar ada (safety net)
+        mkdir -p out/host/linux-x86/bin
+        
+        # Download mkbootimg.py dari Google source dan TIMPA yang lama
         curl -o "$MKBOOTIMG_PATH" https://raw.githubusercontent.com/osm0sis/mkbootimg/master/mkbootimg.py
         chmod +x "$MKBOOTIMG_PATH"
         
-        # Pastikan python terpanggil dengan benar (karena scriptnya python3)
+        # Ubah shebang agar menggunakan python3 (karena env kita ada python2 & 3)
         sed -i '1s|^.*$|#!/usr/bin/env python3|' "$MKBOOTIMG_PATH"
+        
+        # Update timestamp agar make tidak membuild ulang tool ini
+        touch "$MKBOOTIMG_PATH"
         
         echo "MKBOOTIMG berhasil diupdate. Versi:"
         "$MKBOOTIMG_PATH" --version || echo "Versi script OK"
@@ -153,7 +163,7 @@ jobs:
         mka ${{ github.event.inputs.BUILD_TARGET }}image -j$(nproc --all)
 
         # =========================================================
-        # 4. MANUAL AVB SIGNING (Agar boot tanpa stuck)
+        # 4. MANUAL AVB SIGNING
         # =========================================================
         REC_PATH="out/target/product/${{ github.event.inputs.DEVICE_NAME }}/recovery.img"
         
@@ -161,13 +171,10 @@ jobs:
         if [ -f "$REC_PATH" ]; then
             echo "Signing recovery.img dengan AVB Flags 2 (Disable Verification)..."
             
-            # Download avbtool standalone
             curl -o avbtool https://android.googlesource.com/platform/external/avb/+/refs/heads/master/avbtool.py?format=TEXT
             base64 -d avbtool > avbtool.py
             chmod +x avbtool.py
             
-            # Sign Image (Footer ditambahkan/ditimpa)
-            # Menggunakan algorithm SHA256_RSA4096 (Standar)
             python3 avbtool.py add_hash_footer \
                 --image "$REC_PATH" \
                 --partition_name recovery \
