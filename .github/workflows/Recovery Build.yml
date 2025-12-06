@@ -102,7 +102,7 @@ jobs:
         sudo ln -sf /usr/bin/python2 /usr/bin/python
       continue-on-error: true
 
-    - name: Fix Crypto Source Code for Android 9 (Final)
+    - name: Fix Crypto Source Code for Android 9 (Complete)
       shell: python3 {0}
       env:
         SOURCE_ROOT: ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
@@ -131,6 +131,7 @@ jobs:
         
         km3_h = os.path.join(crypto_path, "ext4crypt/Keymaster3.h")
         km3_cpp = os.path.join(crypto_path, "ext4crypt/Keymaster3.cpp")
+        keystorage3_cpp = os.path.join(crypto_path, "ext4crypt/KeyStorage3.cpp")
         decrypt_cpp = os.path.join(crypto_path, "ext4crypt/Decrypt.cpp")
 
         def patch_file(filepath, replacements):
@@ -157,30 +158,37 @@ jobs:
         # 1. PATCH SOURCE CODE
         # ==========================================
         
-        # Patch Keymaster3.h
-        # authorization_set dan keymaster_tags PINDAH ke folder 'keymaster/'
-        # Namespace juga berubah menjadi 'keymaster'
+        # Patch KeyStorage3.cpp (Fix include)
+        patch_file(keystorage3_cpp, [
+            ("#include <keystore/authorization_set.h>", "#include <keymaster/authorization_set.h>"),
+        ])
+
+        # Patch Keymaster3.h (Fix definitions & Namespaces)
+        # Kita arahkan ErrorCode dan KeyPurpose langsung ke HAL V3.0
         patch_file(km3_h, [
             ("#include <keystore/authorization_set.h>", "#include <keymaster/authorization_set.h>"),
             ("#include <keystore/keymaster_tags.h>", "#include <keymaster/keymaster_tags.h>"),
             ("using ::keystore::AuthorizationSet;", "using ::keymaster::AuthorizationSet;"),
-            ("using ::keystore::ErrorCode;", "using ::keymaster::ErrorCode;"),
-            ("using ::keystore::KeyPurpose;", "using ::keymaster::KeyPurpose;"),
-            ("using ::keystore::KeyParameter;", "using ::keymaster::KeyParameter;"), 
+            ("using ::keystore::ErrorCode;", "using ::android::hardware::keymaster::V3_0::ErrorCode;"),
+            ("using ::keystore::KeyPurpose;", "using ::android::hardware::keymaster::V3_0::KeyPurpose;"),
+            ("using ::keystore::KeyParameter;", "using ::android::hardware::keymaster::V3_0::KeyParameter;"), 
         ])
 
-        # Patch Keymaster3.cpp
-        # 1. Header authorization_set dan keymaster_tags diubah ke 'keymaster/'
-        # 2. Header keystore_hidl_support.h DIBIARKAN di 'keystore/' (sesuai log locate Anda)
-        # 3. Namespace ditambah: gunakan KEDUANYA (keystore dan keymaster)
+        # Patch Keymaster3.cpp (Fix Logic & Ambiguity)
+        # 1. Ubah Namespace: Buang keystore, pakai keymaster dan V3_0
+        # 2. Fix .hidl_data() error: Ganti dengan konstruktor hidl_vec
+        # 3. Fix LOG redefinition: Hapus definisi LOG macro di file ini
         patch_file(km3_cpp, [
             ("#include <keystore/keymaster_tags.h>", "#include <keymaster/keymaster_tags.h>"),
             ("#include <keystore/authorization_set.h>", "#include <keymaster/authorization_set.h>"),
-            ("using namespace ::keystore;", "using namespace ::keystore; using namespace ::keymaster;"),
+            ("using namespace ::keystore;", "using namespace ::keymaster;\nusing namespace ::android::hardware::keymaster::V3_0;"),
+            ("#define LOG(x) std::cout", ""), # Hapus definisi LOG yang bentrok
+            # Fix hidl_data() calls by converting AuthorizationSet to hidl_vec manually
+            ("inParams.hidl_data()", "hidl_vec<KeyParameter>(inParams.begin(), inParams.end())"),
+            ("keyParams.hidl_data()", "hidl_vec<KeyParameter>(keyParams.begin(), keyParams.end())"),
         ])
 
         # Patch Decrypt.cpp
-        # Gunakan header system baru (USE_KEYSTORAGE_4) tapi tetap gunakan class Ext4Crypt lama
         patch_file(decrypt_cpp, [
             ("#ifdef USE_KEYSTORAGE_4", "#if 1"), 
             ('#include "Ext4CryptPie.h"', '#include "Ext4Crypt.h"'),
@@ -191,21 +199,19 @@ jobs:
         # ==========================================
         
         # ext4crypt/Android.mk
-        # Include paths:
-        # - system/security/keystore/include (untuk keystore/keystore_hidl_support.h)
-        # - system/keymaster/include (untuk keymaster/authorization_set.h)
+        # Added -Wno-unused-function to fix Ext4Crypt.cpp error
         ext4_content = r"""LOCAL_PATH := $(call my-dir)
         ifeq ($(TW_INCLUDE_CRYPTO), true)
         include $(CLEAR_VARS)
 
         LOCAL_MODULE := libe4crypt
         LOCAL_MODULE_TAGS := eng optional
-        LOCAL_CFLAGS :=
+        # Added -Wno-unused-function to fix escape_null error
+        LOCAL_CFLAGS := -Wno-unused-function
         LOCAL_SRC_FILES := Decrypt.cpp ScryptParameters.cpp Utils.cpp HashPassword.cpp ext4_crypt.cpp
         LOCAL_SHARED_LIBRARIES := libselinux libc libc++ libext4_utils libbase libcrypto libcutils libkeymaster_messages libhardware libprotobuf-cpp-lite
         LOCAL_STATIC_LIBRARIES := libscrypt_static
         
-        # INCLUDES: system/security/keystore/include AND system/keymaster/include
         LOCAL_C_INCLUDES := system/extras/ext4_utils system/extras/ext4_utils/include/ext4_utils external/scrypt/lib/crypto system/security/keystore system/security/keystore/include hardware/libhardware/include/hardware system/security/softkeymaster/include/keymaster system/keymaster/include
 
         ifneq ($(wildcard hardware/libhardware/include/hardware/keymaster0.h),)
@@ -307,7 +313,6 @@ jobs:
         LOCAL_SHARED_LIBRARIES := libcrypto libhardware libcutils libstdc++
         LOCAL_STATIC_LIBRARIES := libscrypttwrp_static
         
-        # INCLUDES: Added system/security/keystore/include AND system/keymaster/include
         LOCAL_C_INCLUDES := external/openssl/include $(commands_recovery_local_path)/crypto/scrypt/lib/crypto system/security/keystore/include hardware/libhardware/include/hardware system/keymaster/include
         
         ifeq ($(shell test $(PLATFORM_SDK_VERSION) -lt 23; echo $$?),0)
@@ -368,7 +373,6 @@ jobs:
         LOCAL_SHARED_LIBRARIES := libcrypto libhardware libcutils libc libstdc++
         LOCAL_STATIC_LIBRARIES := libscrypttwrp_static
         
-        # INCLUDES: Added system/security/keystore/include AND system/keymaster/include
         LOCAL_C_INCLUDES := external/openssl/include $(commands_recovery_local_path)/crypto/scrypt/lib/crypto system/security/keystore/include hardware/libhardware/include/hardware system/keymaster/include
         
         ifeq ($(shell test $(PLATFORM_SDK_VERSION) -lt 23; echo $$?),0)
@@ -437,7 +441,16 @@ jobs:
         find system -name "authorization_set.h"
         echo "============================================="
         echo "Cek isi folder system/security/keystore:"
-        ls -R system || echo "Folder keystore tidak ditemukan"
+        cat system/keymaster/include/keymaster/authorization_set.h
+        cat system/keymaster/ng/include/authorization_set.h
+        cat system/security/keystore/include/keystore/keystore_hidl_support.h
+        cat system/keymaster/ng/include/keystore_hidl_support.h
+        cat system/keymaster/include/keymaster/keymaster_tags.h
+        cat system/keymaster/ng/include/keymaster_tags.h
+        cat system/core/base/include/android-base/logging.h
+        cat system/libhidl/base/include/hidl/HidlSupport.h
+        cat system/security/keystore/include/keystore/keymaster_types.h
+        
         echo "============================================="
 
     - name: Build recovery
