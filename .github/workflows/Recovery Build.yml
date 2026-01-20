@@ -7,11 +7,11 @@ on:
       DEVICE_TREE_URL:
         description: 'DEVICE_TREE_URL'
         required: true
-        default: 'https://github.com/USERNAME_ANDA/device_xiaomi_moon'
+        default: 'https://github.com/try-01/ofrp_device_realme_RMX1805.git'
       DEVICE_TREE_BRANCH:
         description: 'DEVICE_TREE_BRANCH'
         required: true
-        default: 'main' # Sesuaikan dengan branch repo anda (main/master)
+        default: 'fox_12.1' # Sesuaikan dengan branch repo anda (main/master)
       DEVICE_PATH:
         description: 'DEVICE_PATH'
         required: true
