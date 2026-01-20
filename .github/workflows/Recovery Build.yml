@@ -1,40 +1,38 @@
-name: Recovery Build
+name: OrangeFox Build - Redmi 13 (Moon)
 
 on:
   workflow_dispatch:
     inputs:
-      SYNC_URL:
-        description: 'SYNC_URL'
-        required: true
-        default: 'https://gitlab.com/OrangeFox/sync.git'
-      MANIFEST_BRANCH:
-        description: 'MANIFEST_BRANCH'
-        required: true
-        default: '9.0'
+      # PENTING: Ganti URL ini dengan URL Repo Device Tree Anda sendiri!
       DEVICE_TREE_URL:
         description: 'DEVICE_TREE_URL'
         required: true
-        default: 'https://github.com/try-01/ofrp_device_realme_RMX1805'
+        default: 'https://github.com/USERNAME_ANDA/device_xiaomi_moon'
       DEVICE_TREE_BRANCH:
         description: 'DEVICE_TREE_BRANCH'
         required: true
-        default: 'fox_9.0_P'
+        default: 'main' # Sesuaikan dengan branch repo anda (main/master)
       DEVICE_PATH:
         description: 'DEVICE_PATH'
         required: true
-        default: 'device/realme/RMX1805'
+        default: 'device/xiaomi/moon'
       DEVICE_NAME:
         description: 'DEVICE_NAME'
         required: true
-        default: 'RMX1805'
+        default: 'moon'
       MAKEFILE_NAME:
         description: 'MAKEFILE_NAME'
         required: true
-        default: 'omni_RMX1805'
+        default: 'omni_moon'
       BUILD_TARGET:
         description: 'BUILD_TARGET'
         required: true
         default: 'recovery'
+      # Branch 12.1 adalah standar untuk Android 12+ (termasuk A15 GKI)
+      MANIFEST_BRANCH:
+        description: 'MANIFEST_BRANCH'
+        required: true
+        default: '12.1'
 
 jobs:
   build:
@@ -46,7 +44,7 @@ jobs:
     - name: Check Out
       uses: actions/checkout@v4
 
-    - name: Cleanup
+    - name: Cleanup Space
       uses: rokibhasansagar/slimhub_actions@main
 
     - name: Initialize workspace
@@ -56,35 +54,30 @@ jobs:
         echo "workspace-folder=$(pwd)" >> $GITHUB_OUTPUT
       id: pwd
 
-    - name: Set up JDK 8
+    # Android 12+ / OFRP 12.1 butuh Java 11
+    - name: Set up JDK 11
       uses: actions/setup-java@v4
       with:
         distribution: 'temurin'
-        java-version: '8'
+        java-version: '11'
 
-    - name: Force Git to use HTTPS for GitLab
-      run: git config --global url."https://gitlab.com/".insteadOf "git@gitlab.com:"
-
-    - name: Prepare the build environment
+    - name: Install Dependencies
       run: |
-        export JAVA_HOME=/usr/lib/jvm/temurin-8-jdk-amd64
-        sudo apt install git aria2 -y
-        git clone https://gitlab.com/OrangeFox/misc/scripts
-        cd scripts
-        sudo bash setup/android_build_env.sh
-        sed -i 's/cd -/cd ../g' setup/install_android_sdk.sh
-        sudo bash setup/install_android_sdk.sh
+        sudo apt-get update
+        sudo apt-get install -y git aria2 python3 python2
+        sudo ln -sf /usr/bin/python3 /usr/bin/python
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
-    - name: Sync OrangeFox sources and minimal manifest
+    - name: Sync OrangeFox Sources (Branch 12.1)
       run: |
         cd ${{ steps.pwd.outputs.workspace-folder }}
-        git clone ${{ github.event.inputs.SYNC_URL }}
-        cd sync/legacy
-        ./orangefox_sync_legacy.sh --branch ${{ github.event.inputs.MANIFEST_BRANCH }} --path ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
+        # Menggunakan script sync terbaru
+        git clone https://gitlab.com/OrangeFox/sync.git
+        cd sync
+        ./orangefox_sync.sh --branch ${{ github.event.inputs.MANIFEST_BRANCH }} --path ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
-    - name: Clone device tree
+    - name: Clone Device Tree
       run: |
         cd ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
         git clone ${{ github.event.inputs.DEVICE_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.DEVICE_PATH }}
@@ -95,37 +88,42 @@ jobs:
       with:
         swap-size-gb: 12
 
-    - name: Set up Python 2
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y python2
-        sudo ln -sf /usr/bin/python2 /usr/bin/python
-      continue-on-error: true
-
-    - name: Patch Treble Stock Rom Ozip (Sed)
-      run: |
-        cd ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
-        # Patch
-        sed -i '/^bool verify_package_compatibility(ZipWrap \*zw) {/,/^}/c bool verify_package_compatibility(ZipWrap *zw) { // NOLINT\n   (void)zw; // Mark parameter as intentionally unused\n   printf("OrangeFox: Forcefully bypassing Treble compatibility check via patch.\\n");\n   return true;\n}' "./bootable/recovery/installcommand.cpp"
-        sed -i 's/int sdkver = 20/int sdkver = 28/g' "./bootable/recovery/crypto/vold_decrypt/vold_decrypt.cpp"
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
-
-    - name: Build recovery
+    - name: Build Recovery
       run: |
         cd ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
         set +e
         source build/envsetup.sh
+        
+        # Variabel Khusus untuk build GKI / A15
         export ALLOW_MISSING_DEPENDENCIES=true
-        set -e
+        export FOX_USE_TWRP_RECOVERY_IMAGE_BUILDER=1
+        export LC_ALL="C"
+        
         lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
-        make clean && mka ${{ github.event.inputs.BUILD_TARGET }}image -j$(nproc --all)
+        
+        # Kita pakai mka ramdisk-recovery juga untuk jaga-jaga kalau image gagal
+        mka ramdisk-recovery
+        mka ${{ github.event.inputs.BUILD_TARGET }}image -j$(nproc --all)
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+      continue-on-error: true # Lanjut meskipun error, agar kita bisa cek output ramdisk
 
-    - name: Check the output directory before uploading
+    - name: Check Output
       run: |
-        ls -al ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}/out/target/product/
-        echo
-        ls -al ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/
+        echo "Listing output directory..."
+        ls -R ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/
+        
+        echo "Mencari CPIO Ramdisk..."
+        find ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/ -name "*.cpio"
+
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: OrangeFox-Build-Artifacts
+        path: |
+          ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.img
+          ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
+          ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.cpio
+          ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/ramdisk-recovery.cpio
 
     - name: Upload to Release
       uses: softprops/action-gh-release@v2
@@ -133,11 +131,12 @@ jobs:
         files: |
           ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.img
           ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
+          ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/ramdisk-recovery.cpio
         name: ${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
         tag_name: ${{ github.run_id }}
         body: |
           Manifest: ${{ github.event.inputs.MANIFEST_BRANCH }}
           Device: ${{ github.event.inputs.DEVICE_NAME }}
-          Target: ${{ github.event.inputs.BUILD_TARGET }}
+          Note: Gunakan ramdisk-recovery.cpio untuk repack manual jika recovery.img tidak booting.
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
